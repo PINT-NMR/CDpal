@@ -15,6 +15,7 @@ Read our paper describing CDpal here:
 https://www.ncbi.nlm.nih.gov/pubmed/26402034
 
 Compilation instructions:
+
 The current build was compiled with Qt 5.7.0 for Windows, Mac and Linux.
 We cannot guarantee that a different version of Qt can be used to compile CDpal without minor modifications to the source code.
 Download Qt and open the "CDpal_Multi.pro" project file.
