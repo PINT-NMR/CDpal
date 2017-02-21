@@ -1,0 +1,25 @@
+<RCC>
+    <qresource prefix="/img">
+        <file alias="exit_icn.png">exit_icn.png</file>
+        <file alias="background.png">background.png</file>
+        <file alias="fit.png">fit.png</file>
+        <file alias="file.png">file.png</file>
+        <file alias="deleteGraph.png">deleteGraph.png</file>
+        <file alias="printer.png">printer.png</file>
+        <file alias="expand.png">expand.png</file>
+        <file alias="color.png">color.png</file>
+        <file alias="point.png">point.png</file>
+        <file>bgui.png</file>
+        <file>logo.png</file>
+        <file alias="export.png">export.png</file>
+        <file alias="merge.png">merge.png</file>
+        <file alias="help.png">help.png</file>
+        <file alias="ftest.png">ftest.png</file>
+        <file>modelbutton.png</file>
+        <file>trbutton.png</file>
+        <file alias="pen.png">pen.png</file>
+        <file alias="save.png">save.png</file>
+        <file alias="open.png">open.png</file>
+        <file>preset.png</file>
+    </qresource>
+</RCC>
