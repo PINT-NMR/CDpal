@@ -22,8 +22,8 @@
 //  Programmers: Markus Niklasson and Patrik Lundström
 //
 //  Adress correspondence to: patlu@ifm.liu.se
-//  Date: 21 February, 2017
-//  Version: 2.16
+//  Date: 18 August, 2017
+//  Version: 2.18
 //
 
 #include <fstream>
@@ -39,6 +39,7 @@
 #include <fcntl.h>
 #include <string.h>
 #include <ctype.h>
+
 #define R 8.314462
 #define STEP 0.001
 
@@ -494,6 +495,34 @@ void fitfunc_three_state_dimer2_chem(const double x, std::vector< double > &a, d
 }
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
+double fitfunccore(const double x, std::vector< double > &a)
+{
+    double deltaH = a[0];
+    double Tm = a[1];
+    double A = a[2];
+    double K = exp(deltaH/R*(1./(Tm+273.15) - 1./(x+273.15)));
+    double f = K/(1.+K);
 
+    return A*f*(1.-f)*(x+273.15)*(x+273.15);
+}
+
+
+void fitfunc(const double x, std::vector< double > &a, double &y, std::vector< double > &dyda)
+{
+    std::vector< double > aPlus = a;
+    std::vector< double > aMinus = a;
+
+    y = fitfunccore(x, a);
+
+    for (unsigned int i=0; i< a.size(); i++) {
+        aPlus[i] *= (1. + STEP);
+        aMinus[i] *= (1. - STEP);
+
+        dyda[i] = (fitfunccore(x, aPlus) - fitfunccore(x, aMinus)) / (aPlus[i] - aMinus[i]);
+
+        aPlus[i] = a[i];
+        aMinus[i] = a[i];
+    }
+}
 
 

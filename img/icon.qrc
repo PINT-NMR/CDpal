@@ -21,5 +21,7 @@
         <file alias="save.png">save.png</file>
         <file alias="open.png">open.png</file>
         <file>preset.png</file>
+        <file>diff.png</file>
+        <file>simulate.png</file>
     </qresource>
 </RCC>

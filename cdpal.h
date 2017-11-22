@@ -22,8 +22,8 @@
 //  Programmers: Markus Niklasson and Patrik Lundström
 //
 //  Adress correspondence to: patlu@ifm.liu.se
-//  Date: 21 February, 2017
-//  Version: 2.16
+//  Date: 18 August, 2017
+//  Version: 2.18
 //
 
 #ifndef CDPAL_H
@@ -45,6 +45,8 @@
 #include "loadpreset.h"
 #include "namefiles.h"
 #include "qcustomplot.h"
+#include "fitdiff.h"
+#include "simulatedialog.h"
 
 namespace Ui {
 class CDpal;
@@ -67,8 +69,11 @@ private:
     bool toggleState;
     bool toggleState2;
     bool chemical;
+    bool diffMode;
+    simulateDialog *simDiag;
 
 public slots:
+    void changeDiffMode(bool startup);
     void Autofit();
     void AutofitAll();
     void AutofitTm(std::vector< double > xV, std::vector< double > yV);
@@ -123,6 +128,7 @@ public slots:
     void on_actionNID_triggered();
     void on_actionNDNID_triggered();
     void on_actionQuit_triggered();
+    void on_actionSimulate_data_triggered();
     void on_helpButton_clicked();
     void openProject();
     void plotfit(int graphNo);
@@ -131,6 +137,7 @@ public slots:
     void removeFittedGraphs();
     void removeHighlight();
     void removeSelectedGraph();
+    void deleteLastDataset();
     void renderGraph(std::vector< std::vector<std::string> > dataVec, int mode, int graphNo);
     void saveProject();
     void saveResults();
@@ -139,10 +146,19 @@ public slots:
     void selectionChanged();
     void setupChemicalGUI();
     void setupLabels();
+    void setupDiffLabels();
     void titleDoubleClick(QMouseEvent* event, QCPPlotTitle* title);
     void toggleDW();
     void toggleDW2();
     void updateTable(int graphNo);
+    void differentiate();
+    void simulate();
+private slots:
+    void on_clearButtonDiff_clicked();
+    void on_fitDiff_clicked();
+    void on_autoFitDiff_clicked();
+    void on_autofitAllDiff_clicked();
+    void autoFitDiff(int idx, bool manual, double mdH, double mtm, double ma);
 };
 
 #endif // CDPAL_H

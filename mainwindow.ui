@@ -70,7 +70,7 @@
      </font>
     </property>
     <property name="text">
-     <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p align=&quot;right&quot;&gt;&lt;span style=&quot; font-weight:600; text-decoration: underline;&quot;&gt;Kindly report bugs and performance issues to:&lt;/span&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;&lt;br/&gt;Markus Niklasson - marni@ifm.liu.se&lt;br/&gt;Patrik Lundström - patlu@ifm.liu.se&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+     <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p align=&quot;right&quot;&gt;&lt;span style=&quot; font-weight:600; text-decoration: underline;&quot;&gt;Kindly report bugs and performance issues to:&lt;/span&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;&lt;br/&gt;Markus Niklasson - mniklasson87@gmail.com&lt;br/&gt;Patrik Lundström - patlu@ifm.liu.se&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
     </property>
    </widget>
    <widget class="QLabel" name="versionLabel">
@@ -90,7 +90,7 @@
      </font>
     </property>
     <property name="text">
-     <string>Version 2.16</string>
+     <string>Version 2.18</string>
     </property>
    </widget>
    <widget class="QWidget" name="layoutWidget">
@@ -275,7 +275,7 @@
      <x>0</x>
      <y>0</y>
      <width>580</width>
-     <height>19</height>
+     <height>21</height>
     </rect>
    </property>
   </widget>

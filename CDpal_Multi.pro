@@ -32,7 +32,8 @@ SOURCES += cdpal.cpp \
            displayerror.cpp \
            namefiles.cpp\
            qcustomplot.cpp\
-           qcustomplot_global.h
+           qcustomplot_global.h \
+    simulatedialog.cpp
 
 HEADERS += cdpal.h \
            errorsim.h \
@@ -51,7 +52,9 @@ HEADERS += cdpal.h \
            loadpreset.h \
            displayerror.h \
            namefiles.h\
-           qcustomplot.h
+           qcustomplot.h \
+    fitdiff.h \
+    simulatedialog.h
 
 FORMS   += cdpal.ui \
            exportdialog.ui \
@@ -63,7 +66,8 @@ FORMS   += cdpal.ui \
            savepreset.ui \
            loadpreset.ui \
            displayerror.ui \
-           namefiles.ui
+           namefiles.ui \
+    simulatedialog.ui
 
 RESOURCES += \
            img/icon.qrc

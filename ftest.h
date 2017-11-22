@@ -22,8 +22,8 @@
 //  Programmers: Markus Niklasson and Patrik Lundström
 //
 //  Adress correspondence to: patlu@ifm.liu.se
-//  Date: 21 February, 2017
-//  Version: 2.16
+//  Date: 18 August, 2017
+//  Version: 2.18
 //
 
 #ifndef FTEST_H

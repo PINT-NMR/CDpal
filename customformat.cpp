@@ -22,8 +22,8 @@
 //  Programmers: Markus Niklasson and Patrik Lundström
 //
 //  Adress correspondence to: patlu@ifm.liu.se
-//  Date: 21 February, 2017
-//  Version: 2.16
+//  Date: 18 August, 2017
+//  Version: 2.18
 //
 
 #include "customformat.h"
@@ -44,7 +44,10 @@ customFormat::customFormat(QWidget *parent) :
 #endif
     extern int mode;
     if(mode==1)
+    {
         ui->typeLabel->setText("Concentration data column");
+        ui->stopBox->hide();
+    }
     QRect position = frameGeometry();
     position.moveCenter(QDesktopWidget().availableGeometry().center());
     move(position.topLeft());
@@ -118,6 +121,7 @@ customFormat::customFormat(QWidget *parent) :
     connect(ui->loadButton, SIGNAL(clicked()), this, SLOT(loadPreset2()));
     connect(ui->deleteButton, SIGNAL(clicked()), this, SLOT(deletePreset()));
     connect(ui->skipBox, SIGNAL(valueChanged(int)), this, SLOT(preview()));
+    connect(ui->stopBox, SIGNAL(toggled(bool)), this, SLOT(preview()));
     updatePreset();
     preview();
 }
@@ -182,7 +186,9 @@ void customFormat::preview()
         }
         preText+="\n";
     }
-    if(mode==0)
+    if(mode==0 && !ui->stopBox->isChecked())
+        preText+="...\nDATA WILL BE IMPORTED UNTIL:\n1:END OF FILE\n2:BAD FORMAT\n...";
+    else if(mode==0)
         preText+="...\nDATA WILL BE IMPORTED UNTIL:\n1:END OF FILE\n2:BAD FORMAT\n3:TEMPERATURE IS DECREASING\n...";
     else
         preText+="...\nDATA WILL BE IMPORTED UNTIL:\n1:END OF FILE\n2:BAD FORMAT\n...";
@@ -520,7 +526,7 @@ QString customFormat::checkErrors()
                             if(colCount==tempCol)
                             {
                                 double d(mconvert(sub).toDouble(&ok));
-                                if(ok && lastTemp>d)
+                                if(ok && lastTemp>d && ui->stopBox->isChecked())
                                 {
                                     stopReading=true;
                                     stoppedReading+=mconvert(line);

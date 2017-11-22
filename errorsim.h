@@ -22,12 +22,113 @@
 //  Programmers: Markus Niklasson and Patrik Lundström
 //
 //  Adress correspondence to: patlu@ifm.liu.se
-//  Date: 21 February, 2017
-//  Version: 2.16
+//  Date: 18 August, 2017
+//  Version: 2.18
 //
 
 #define N_MC 300
 #define N_BOOTSTRAP 100
+
+struct CDdiffErrorSim {
+
+
+   std::vector< double > x, y, sig;
+   int ndata;
+
+   std::vector< double > guess;
+   std::vector< bool > ia;
+   int ma;
+
+   void (*funcs)(const double, std::vector< double > &, double &, std::vector< double > &);
+
+   std::vector< double > mcerr;
+   std::vector< double > jackerr;
+   std::vector< double > booterr;
+
+   CDdiffErrorSim(std::vector< double > &xx, std::vector< double > &yy, std::vector< double > &ssig, std::vector< double > &gguess, std::vector< bool > &iia,
+        void (*funks)(const double, std::vector< double > &, double &, std::vector< double > &)) :
+        x(xx), y(yy), sig(ssig), ndata(x.size()), guess(gguess), ia(iia), ma(guess.size()), funcs(funks) { }
+
+
+   void simerror(bool fmc, bool fjack, bool fboot)
+   {
+       montecarlo(fmc);
+       jackknife(fjack);
+       bootstrap(fboot);
+   }
+
+   void montecarlo(bool fmc=true)
+   {
+       if (!fmc)
+           return;
+   }
+
+   void jackknife(bool fjack=true)
+   {
+      if (!fjack)
+          return;
+
+      double pseudoa;
+      double xspare, yspare, sigspare;
+      std::vector< double > chisqjack(ndata);
+      std::vector< double > s(ma, 0.);
+      std::vector< double > s2(ma, 0.);
+      std::vector< double > xjack(ndata-1);
+      std::vector< double > yjack(ndata-1);
+      std::vector< double > sigjack(ndata-1);
+
+      for (int i=0; i<ndata-1; i++) {
+          xjack[i] = x[i];
+          yjack[i] = y[i];
+          sigjack[i] = sig[i];
+      }
+      xspare = x[ndata-1];
+      yspare = y[ndata-1];
+      sigspare = sig[ndata-1];
+
+      for (int i=0; i<ndata; i++) {
+         CDdiffFitmrq mrqfit(xjack, yjack, sigjack, guess, ia, funcs);
+         mrqfit.fit();
+
+         for (int j=0; j<ma; j++) {
+            pseudoa = ndata*guess[j] - (ndata-1)*mrqfit.a[j];
+            s[j] += pseudoa;
+            s2[j] += pseudoa*pseudoa;
+         }
+         if (i<ndata-1) {
+           std::swap(xjack[i],xspare);
+           std::swap(yjack[i],yspare);
+           std::swap(sigjack[i],sigspare);
+         }
+      }
+
+      jackerr.resize(ma);
+      for (int j=0; j<ma; j++)
+         jackerr[j] = sqrt((s2[j] - s[j]*s[j]/(double)ndata)/(double)(ndata*(ndata-1)));
+   }
+
+   void bootstrap(bool fboot=true)
+   {
+   //////////////////////////////////
+   // Bootstrap estimation of errors some data points are replaced
+   // with duplicates of other data points in each round. The
+   // standard error of the fitted values are used as a
+   // measure of the uncertainty of the fitted parameters.
+   //
+   // BOOTSTRAP IS NO GOOD WHEN TO FEW DATA POINTS ARE FITTED
+   // SINCE HIGHLY IRREGULAR DATA SETS MAY RESULT. A WORST
+   // CASE SCENARIO IS THAT THE SAME DATA POINT IS DRAWN FOR
+   // THE ENTIRE SET MEANING THAT THE PROGRAM EVEN CRASHES.
+   // USE WITH CAUTION!!
+   //
+   // coded by Patrik Lundstrom
+   //////////////////////////////////
+       if (!fboot)
+           return;
+   }
+};
+
+
 
 struct ErrorSim {
    std::vector< double > x, y, error;

@@ -22,8 +22,8 @@
 //  Programmers: Markus Niklasson and Patrik Lundström
 //
 //  Adress correspondence to: patlu@ifm.liu.se
-//  Date: 28 October, 2015
-//  Version: 2.15
+//  Date: 22 November, 2017
+//  Version: 2.18
 //
 
 #include "cdpal.h"
@@ -33,11 +33,14 @@
 #include "errorsim.h"
 #include "output.h"
 #include "QLocale"
+#include "random"
 
 CDpal::CDpal(QWidget *parent) :
     QMainWindow(parent),
     ui(new Ui::CDpal)
 {
+    simDiag = 0;
+    diffMode = false;
     initializeGlobals();
     toggleState =false;
     toggleState2 =false;
@@ -426,7 +429,7 @@ CDpal::CDpal(QWidget *parent) :
     position.moveCenter(QDesktopWidget().availableGeometry().center());
     move(position.topLeft());
     ui->CDplot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectAxes |
-                                    QCP::iSelectLegend | QCP::iSelectPlottables | QCP::iSelectItems);
+                                QCP::iSelectLegend | QCP::iSelectPlottables | QCP::iSelectItems);
     if(mode==0)
         ui->CDplot->xAxis->setRange(20, 70);
     else
@@ -549,6 +552,187 @@ CDpal::CDpal(QWidget *parent) :
     connect(ui->trButton, SIGNAL(clicked()), this, SLOT(toggleDW()));
     connect(ui->modelButton, SIGNAL(clicked()), this, SLOT(toggleDW2()));
     connect(ui->actionOpen_Project, SIGNAL(triggered()), this, SLOT(openProject()));
+    if(chemical)
+        ui->toolBar->removeAction(ui->actionDifferentiate);
+    connect(ui->actionDifferentiate, SIGNAL(triggered()), this, SLOT(differentiate()));
+    changeDiffMode(false);
+}
+
+void CDpal::changeDiffMode(bool startup)
+{
+    ui->actionAutofit->setDisabled(diffMode);
+    ui->actionAutofit_All->setDisabled(diffMode);
+    ui->actionFit->setDisabled(diffMode);
+    ui->actionDifferentiate->setDisabled(diffMode);
+    if(diffMode)
+    {
+        if(!startup)
+            ui->CDplot->yAxis->setLabel("Rate of fractional change");
+        ui->tabWidget->setTabEnabled(4,true);
+        ui->tabWidget->setTabEnabled(0,false);
+        ui->tabWidget->setTabEnabled(1,false);
+        ui->tabWidget->setTabEnabled(2,false);
+        ui->tabWidget->setTabEnabled(3,false);
+        ui->tabWidget->setStyleSheet("QTabWidget::pane { \nmargin: 0px,1px,1px,1px;\nborder: 3px solid #020202;\nborder-radius: 7px;\npadding: 1px;\n	background-color: qlineargradient(spread:pad, x1:0.511, y1:1, x2:0.506, y2:0, stop:0 rgba(135, 190, 205, 100), stop:1 rgba(255, 255, 255, 255));\n}\nQTabBar::tab { \nmargin: 0px,0px,0px,0px;\nborder: 1px solid #020202;\nborder-radius: 5px;\npadding: 4px;\n }\nQTabBar::tab:selected, QTabBar::tab:hover {\n    background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,                                      stop: 0 #fafafa, stop: 0.4 #f4f4f4,                                      stop: 0.5 #e7e7e7, stop: 1.0 #fafafa); \n     }\nQTabBar::tab:selected { \n	border-color: #9B9B9B;          \n	border-bottom-color: #C2C7CB;\n}\nQTabBar::tab:!selected {\n    margin-top: 2px;\n}\n\nQTabBar::tab::disabled {width: 0; height: 0; margin: 0; padding: 0; border: none;}");
+        ui->CDplot->replot();
+        setupDiffLabels();
+    }
+    else
+    {
+        if(!startup)
+            ui->CDplot->yAxis->setLabel("Fractional change");
+        ui->tabWidget->setTabEnabled(4,false);
+        ui->tabWidget->setTabEnabled(0,true);
+        ui->tabWidget->setTabEnabled(1,true);
+        ui->tabWidget->setTabEnabled(2,true);
+        ui->tabWidget->setTabEnabled(3,true);
+        ui->tabWidget->setStyleSheet("QTabWidget::pane { \nmargin: 0px,1px,1px,1px;\nborder: 3px solid #020202;\nborder-radius: 7px;\npadding: 1px;\n	background-color: qlineargradient(spread:pad, x1:0.511, y1:1, x2:0.506, y2:0, stop:0 rgba(135, 190, 205, 100), stop:1 rgba(255, 255, 255, 255));\n}\nQTabBar::tab { \nmargin: 0px,0px,0px,0px;\nborder: 1px solid #020202;\nborder-radius: 5px;\npadding: 4px;\n }\nQTabBar::tab:selected, QTabBar::tab:hover {\n    background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,                                      stop: 0 #fafafa, stop: 0.4 #f4f4f4,                                      stop: 0.5 #e7e7e7, stop: 1.0 #fafafa); \n     }\nQTabBar::tab:selected { \n	border-color: #9B9B9B;          \n	border-bottom-color: #C2C7CB;\n}\nQTabBar::tab:!selected {\n    margin-top: 2px;\n}\n\nQTabBar::tab::disabled {width: 0; height: 0; margin: 0; padding: 0; border: none;}");
+        ui->CDplot->replot();
+        if(chemical)
+            setupChemicalGUI();
+        else
+            setupLabels();
+    }
+}
+
+void CDpal::differentiate()
+{
+    if(diffMode) return;
+    QMessageBox::StandardButton dialog;
+    dialog = QMessageBox::warning(this, "CDpal",
+                                  "Do you want to differentiate the data sets?\n"
+                                  "All current data sets will be discarded."
+                                  "\nThis step cannot be undone.",
+                                  QMessageBox::Yes | QMessageBox::No);
+    if( dialog == QMessageBox::No)
+        return;
+    diffMode = true;
+    changeDiffMode(false);
+    int max(ui->CDplot->graphCount());
+    std::vector< std::vector< std::vector<std::string> > > dVec2;
+    QVector<QString> graphNames;
+    for(int i(0); i<max; ++i)
+    {
+        if(ui->CDplot->graph(i)->name().contains("(fit:"))
+            continue;
+        std::vector<std::string> diffVec;
+        bool ok(true);
+        for(int j(0); j<ui->CDplot->graph(i)->data()->values().count(); ++j)
+        {
+            double x2(.0),x1(.0);
+            double y2(.0),y1(.0);
+            int it(0);
+            if(j==0)
+            {
+                if(ui->CDplot->graph(i)->data()->values().count()<4)
+                {
+                    ok = false;
+                    break;
+                }
+                while(x2-x1==0.0 && ok)
+                {
+                    x1 =ui->CDplot->graph(i)->data()->values().at(j+1).key;
+                    y1 =ui->CDplot->graph(i)->data()->values().at(j+1).value;
+                    x2 =ui->CDplot->graph(i)->data()->values().at(j+2+it).key;
+                    y2 =ui->CDplot->graph(i)->data()->values().at(j+2+it).value;
+                    if(x2-x1)
+                        diffVec.push_back(QString::number((y2-y1)/(x2-x1)).toStdString());
+                    else
+                    {
+                        if(j+2+it < ui->CDplot->graph(i)->data()->values().count())
+                            it++;
+                        else //fail
+                            ok = false;
+                    }
+                }
+            }
+            else if(j==ui->CDplot->graph(i)->data()->values().count()-1)
+            {
+                if(ui->CDplot->graph(i)->data()->values().count()<4)
+                {
+                    ok = false;
+                    break;
+                }
+                while(x2-x1==0.0 && ok)
+                {
+                    x1 =ui->CDplot->graph(i)->data()->values().at(j-2-it).key;
+                    y1 =ui->CDplot->graph(i)->data()->values().at(j-2-it).value;
+                    x2 =ui->CDplot->graph(i)->data()->values().at(j-1).key;
+                    y2 =ui->CDplot->graph(i)->data()->values().at(j-1).value;
+                    if(x2-x1)
+                        diffVec.push_back(QString::number((y2-y1)/(x2-x1)).toStdString());
+                    else
+                    {
+                        if(j-it-3 > 0)
+                            it++;
+                        else //fail
+                            ok = false;
+                    }
+                }
+            }
+            else
+            {
+                int it2(0);
+                while(x2-x1==0.0 && ok)
+                {
+                    x1 =ui->CDplot->graph(i)->data()->values().at(j-1-it).key;
+                    y1 =ui->CDplot->graph(i)->data()->values().at(j-1-it).value;
+                    x2 =ui->CDplot->graph(i)->data()->values().at(j+1+it2).key;
+                    y2 =ui->CDplot->graph(i)->data()->values().at(j+1+it2).value;
+                    if(x2-x1)
+                        diffVec.push_back(QString::number((y2-y1)/(x2-x1)).toStdString());
+                    else
+                    {
+                        if(j-it-2 > 0)
+                            it++;
+                        else if(j+2+it2 < ui->CDplot->graph(i)->data()->values().count())
+                            it2++;
+                        else //fail
+                            ok = false;
+                    }
+                }
+            }
+            if(!ok)
+                break;
+        }
+        if(!ok || diffVec.size() != (uint) ui->CDplot->graph(i)->data()->values().count())
+            continue;
+
+        std::vector< std::vector<std::string> > dVec;
+        for(uint j(0); j<diffVec.size(); ++j)
+        {
+            std::vector<std::string> tmpVec;
+            double d = ui->CDplot->graph(i)->data()->keys().at(j);
+            std::string x(mconvert(d));
+            tmpVec.push_back(x);
+            tmpVec.push_back(diffVec.at(j));
+            dVec.push_back(tmpVec);
+        }
+        dVec2.push_back(dVec);
+        graphNames.push_back(ui->CDplot->graph(i)->name());
+    }
+    ui->CDplot->clearGraphs();
+    ui->CDplot->replot();
+    updateTable(0);
+    clearResults();
+    extern std::vector< std::vector< std::string> > rV2;
+    extern std::vector< std::vector< std::string> > resultStrVec;
+    resultStrVec.clear();
+    rV2.clear();
+    ui->graphBox->clear();
+    ui->graphBox_2->clear();
+    ui->graphBox_3->clear();
+    ui->graphBox_4->clear();
+    ui->graphBoxDiff->clear();
+    extern bool customName;
+    extern QString currentName;
+    customName = true;
+    for(uint i(0); i<dVec2.size(); ++i)
+    {
+        currentName = graphNames.at(i);
+        renderGraph(dVec2.at(i), 0, 0);
+    }
+    customName = false;
 }
 
 void CDpal::on_actionND_triggered()
@@ -590,6 +774,9 @@ void CDpal::handleAutofit(int type)
 
 void CDpal::setupChemicalGUI()
 {
+    ui->scaleLabel->hide();
+    ui->fscale->hide();
+    ui->errscale->hide();
     ui->chemicalP->hide();
     ui->proteinBoxChemical->hide();
     ui->proteinFixChemical->hide();
@@ -713,8 +900,99 @@ void CDpal::initializeGlobals()
     extern QVector<QString> styleVec; styleVec.clear();
 }
 
+void CDpal::setupDiffLabels()
+{
+    ui->modelEdit->hide();
+    ui->label_2->hide();
+    ui->lP->hide();
+    ui->lH2->hide();
+    ui->lTm2->hide();
+    ui->lCp->hide();;
+    ui->lCp_2->hide();
+    ui->lIn->hide();
+    ui->lId->hide();
+    ui->lIi->hide();
+    ui->lKd->hide();
+    ui->lKi->hide();
+    ui->lKn->hide();
+    ui->lS->hide();
+    ui->lH1->hide();
+    ui->lH1diff->show();
+    ui->lH1diff->setText("<html><font color=\"red\">|&Delta;H|</font> (kJ/mol)</html>");
+
+    ui->fP->hide();
+    ui->fH2->hide();
+    ui->fTm2->hide();
+    ui->fCp->hide();;
+    ui->fCp_2->hide();
+    ui->fIn->hide();
+    ui->fId->hide();
+    ui->fIi->hide();
+    ui->fKd->hide();
+    ui->fKi->hide();
+    ui->fKn->hide();
+    ui->fS->hide();
+
+    ui->errP->hide();
+    ui->errH2->hide();
+    ui->errTm2->hide();
+    ui->errCp->hide();;
+    ui->errCp_2->hide();
+    ui->errIn->hide();
+    ui->errId->hide();
+    ui->errIi->hide();
+    ui->errKd->hide();
+    ui->errKi->hide();
+    ui->errKn->hide();
+    ui->errS->hide();
+    ui->scaleLabel->show();
+    ui->fscale->show();
+    ui->errscale->show();
+}
+
 void CDpal::setupLabels()
 {
+    ui->scaleLabel->hide();
+    ui->fscale->hide();
+    ui->errscale->hide();
+    ui->fP->show();
+    ui->fH2->show();
+    ui->fTm2->show();
+    ui->fCp->show();;
+    ui->fCp_2->show();
+    ui->fIn->show();
+    ui->fId->show();
+    ui->fIi->show();
+    ui->fKd->show();
+    ui->fKi->show();
+    ui->fKn->show();
+    ui->fS->show();
+    ui->errP->show();
+    ui->errH2->show();
+    ui->errTm2->show();
+    ui->errCp->show();;
+    ui->errCp_2->show();
+    ui->errIn->show();
+    ui->errId->show();
+    ui->errIi->show();
+    ui->errKd->show();
+    ui->errKi->show();
+    ui->errKn->show();
+    ui->errS->show();
+    ui->lP->show();
+    ui->lH2->show();
+    ui->lTm1->show();
+    ui->lCp->show();;
+    ui->lCp_2->show();
+    ui->lIn->show();
+    ui->lId->show();
+    ui->lIi->show();
+    ui->lKd->show();
+    ui->lKi->show();
+    ui->lKn->show();
+    ui->lS->show();
+    ui->label_2->show();
+    ui->modelEdit->show();
     //Special settings for thermal denaturation mode
     ui->chemicalLine->hide();
     ui->chemicalLine1->hide();
@@ -757,6 +1035,8 @@ void CDpal::setupLabels()
     ui->lKi->setVisible(false);
     ui->fKi->setVisible(false);
     ui->errKi->setVisible(false);
+    ui->lH1->show();
+    ui->lH1diff->hide();
 }
 
 void CDpal::clearResults()
@@ -1013,8 +1293,8 @@ void CDpal::fitRegion(int state)//state=1 native, =2 unfolded, 3=intermediate
     int len =0;
     while (j != dataMap->constEnd())
     {
-         j++;
-         len++;
+        j++;
+        len++;
     }
     if(len==1)
     {
@@ -1062,8 +1342,8 @@ void CDpal::fitRegion(int state)//state=1 native, =2 unfolded, 3=intermediate
     {
         QMessageBox::StandardButton dialog3;
         dialog3 = QMessageBox::warning(this, "CDpal",
-                     "Linear regression failed. Please add or remove data points and try again. Aborting.",
-                     QMessageBox::Ok);
+                                       "Linear regression failed. Please add or remove data points and try again. Aborting.",
+                                       QMessageBox::Ok);
         if(QMessageBox::Ok==dialog3)
             matrixError="";
         return;
@@ -1072,7 +1352,7 @@ void CDpal::fitRegion(int state)//state=1 native, =2 unfolded, 3=intermediate
     myerr.simerror(); //jackknife
 
     Output myoutput(x, y, errVal, fitData.parVec, flin, myerr.jackerr,
-                  fitData.variance, fitData.chi, dof, cfile, cfile);
+                    fitData.variance, fitData.chi, dof, cfile, cfile);
     myoutput.print(true);
     myoutput.plot(false, true); //smooth plotting (many data points)
     extern std::string resultStr;
@@ -1145,8 +1425,8 @@ void CDpal::on_helpButton_clicked()
 {
     QMessageBox::StandardButton dialog;
     dialog = QMessageBox::warning(this, "CDpal",
-                 "Linear regression\nInstead of estimating the slope and intercept of your data you can set regions used for linear regression by utilizing this function.\n\n1. Select a graph that should be fitted and highlight the linear native region in the table.\n2. Click \"Set\".\n3. Repeat steps 1 and 2 for the linear denatured region.\n\nThe results from the linear regression will be displayed as the intercept and slope parameters for fitting.",
-                 QMessageBox::Ok);
+                                  "Linear regression\nInstead of estimating the slope and intercept of your data you can set regions used for linear regression by utilizing this function.\n\n1. Select a graph that should be fitted and highlight the linear native region in the table.\n2. Click \"Set\".\n3. Repeat steps 1 and 2 for the linear denatured region.\n\nThe results from the linear regression will be displayed as the intercept and slope parameters for fitting.",
+                                  QMessageBox::Ok);
     if(dialog==QMessageBox::Ok)
         return;
 }
@@ -1155,8 +1435,8 @@ void CDpal::helpAdv()
 {
     QMessageBox::StandardButton dialog;
     dialog = QMessageBox::warning(this, "CDpal",
-                 "Linear regression\nInstead of estimating the slope and intercept of your data you can set regions used for linear regression by utilizing this function.\n\n1. Select a graph that should be fitted and highlight the linear native region in the table.\n2. Click \"Set\".\n3. Repeat steps 1 and 2 for the linear intermediate and denatured regions.\n\nThe results from the linear regression will be displayed as the intercept and slope parameters for fitting.",
-                 QMessageBox::Ok);
+                                  "Linear regression\nInstead of estimating the slope and intercept of your data you can set regions used for linear regression by utilizing this function.\n\n1. Select a graph that should be fitted and highlight the linear native region in the table.\n2. Click \"Set\".\n3. Repeat steps 1 and 2 for the linear intermediate and denatured regions.\n\nThe results from the linear regression will be displayed as the intercept and slope parameters for fitting.",
+                                  QMessageBox::Ok);
     if(dialog==QMessageBox::Ok)
         return;
 }
@@ -1167,8 +1447,8 @@ void CDpal::mergeGraphs()
     {
         QMessageBox::StandardButton dialog;
         dialog = QMessageBox::warning(this, "CDpal",
-                     "Do you want to merge all data into one data set?\nMerging graphs will delete any curve fits.\nThis step cannot be undone.",
-                     QMessageBox::Yes | QMessageBox::No);
+                                      "Do you want to merge all data into one data set?\nMerging graphs will delete any curve fits.\nThis step cannot be undone.",
+                                      QMessageBox::Yes | QMessageBox::No);
         if( dialog == QMessageBox::Yes)
         {
             std::vector<std::vector<std::string> > dataVec;
@@ -1206,36 +1486,40 @@ void CDpal::mergeGraphs()
             updateTable(0);
             extern std::vector< std::vector< std::string> > resultStrVec;
             resultStrVec.clear();
-//Disables functions when no data is present
-             renderGraph(dataVec,0,0);
-             ui->graphBox->clear();
-             ui->graphBox->addItem(ui->CDplot->graph(0)->name());
-             ui->graphBox_2->clear();
-             ui->graphBox_2->addItem(ui->CDplot->graph(0)->name());
-             ui->graphBox_3->clear();
-             ui->graphBox_3->addItem(ui->CDplot->graph(0)->name());
-             ui->graphBox_4->clear();
-             ui->graphBox_4->addItem(ui->CDplot->graph(0)->name());
+            //Disables functions when no data is present
+            renderGraph(dataVec,0,0);
+            ui->graphBox->clear();
+            ui->graphBox->addItem(ui->CDplot->graph(0)->name());
+            ui->graphBox_2->clear();
+            ui->graphBox_2->addItem(ui->CDplot->graph(0)->name());
+            ui->graphBox_3->clear();
+            ui->graphBox_3->addItem(ui->CDplot->graph(0)->name());
+            ui->graphBox_4->clear();
+            ui->graphBox_4->addItem(ui->CDplot->graph(0)->name());
+            ui->graphBox_4->clear();
+            ui->graphBox_4->addItem(ui->CDplot->graph(0)->name());
+            ui->graphBoxDiff->clear();
+            ui->graphBoxDiff->addItem(ui->CDplot->graph(0)->name());
         }
     }
 }
 
 void CDpal::titleDoubleClick(QMouseEvent* event, QCPPlotTitle* title)
 {
-  Q_UNUSED(event)
-  // Set the plot title by double clicking on it
+    Q_UNUSED(event)
+    // Set the plot title by double clicking on it
     extern bool titleChanged;
     titleChanged=true;
-  bool ok;
-  QString newTitle = QInputDialog::getText(this, "CDpal", "New plot title:", QLineEdit::Normal, title->text(), &ok);
-  if (ok&& newTitle!="")
-  {
-      extern QString titleName;
-      titleName =newTitle;
-      title->setText(newTitle);
-      title->setFont(QFont("sans", 16, QFont::Bold));
-      ui->CDplot->replot();
-  }
+    bool ok;
+    QString newTitle = QInputDialog::getText(this, "CDpal", "New plot title:", QLineEdit::Normal, title->text(), &ok);
+    if (ok&& newTitle!="")
+    {
+        extern QString titleName;
+        titleName =newTitle;
+        title->setText(newTitle);
+        title->setFont(QFont("sans", 16, QFont::Bold));
+        ui->CDplot->replot();
+    }
 }
 
 void CDpal::changeOrnament()
@@ -1413,8 +1697,8 @@ void CDpal::on_actionQuit_triggered()
 {
     QMessageBox::StandardButton dialog;
     dialog = QMessageBox::warning(this, "CDpal",
-                 "Do you want to quit?\nAny unsaved changes will be lost.",
-                 QMessageBox::Ok | QMessageBox::Cancel);
+                                  "Do you want to quit?\nAny unsaved changes will be lost.",
+                                  QMessageBox::Ok | QMessageBox::Cancel);
     if( dialog == QMessageBox::Ok)
         QApplication::quit();
 }
@@ -1426,115 +1710,117 @@ void CDpal::childClosed()
 
 void CDpal::axisLabelDoubleClick(QCPAxis *axis, QCPAxis::SelectablePart part)
 {
-  // Set an axis label by double clicking on it
-  if (part == QCPAxis::spAxisLabel) // only react when the actual axis label is clicked, not tick label or axis backbone
-  {
-    bool ok;
-    QString newLabel = QInputDialog::getText(this, "CDpal", "New axis label:", QLineEdit::Normal, axis->label(), &ok);
-    if (ok && newLabel!="")
+    // Set an axis label by double clicking on it
+    if (part == QCPAxis::spAxisLabel) // only react when the actual axis label is clicked, not tick label or axis backbone
     {
-      axis->setLabel(newLabel);
-      axis->setLabelFont(QFont("sans", 12, QFont::Bold));
-      ui->CDplot->replot();
+        bool ok;
+        QString newLabel = QInputDialog::getText(this, "CDpal", "New axis label:", QLineEdit::Normal, axis->label(), &ok);
+        if (ok && newLabel!="")
+        {
+            axis->setLabel(newLabel);
+            axis->setLabelFont(QFont("sans", 12, QFont::Bold));
+            ui->CDplot->replot();
+        }
     }
-  }
 }
 
 void CDpal::legendDoubleClick(QCPLegend *legend, QCPAbstractLegendItem *item)
 {
-  // Rename a graph by double clicking on its legend item
-  Q_UNUSED(legend)
-  if (item) // only react if item was clicked (user could have clicked on border padding of legend where there is no item, then item is 0)
-  {
-    QCPPlottableLegendItem *plItem = qobject_cast<QCPPlottableLegendItem*>(item);
-    QString str = plItem->plottable()->name();
-    bool fit = false;
-    if(str.length()>4)
-        for(int i=0; i<str.length()-4; i++)
-        {
-            if(str[i]=='(' && str[i+1]=='f' && str[i+2]=='i' && str[i+3]=='t' && str[i+4]==':')
-                fit = true;
-        }
-    if(!fit)
+    // Rename a graph by double clicking on its legend item
+    Q_UNUSED(legend)
+    if (item) // only react if item was clicked (user could have clicked on border padding of legend where there is no item, then item is 0)
     {
-        bool ok;
-        QString newName = QInputDialog::getText(this, "CDpal", "New graph name:", QLineEdit::Normal, plItem->plottable()->name(), &ok);
-        if (ok && newName!="")
-        {
-            bool dup=false;
-            for(int i=0; i<ui->CDplot->graphCount(); i++)
+        QCPPlottableLegendItem *plItem = qobject_cast<QCPPlottableLegendItem*>(item);
+        QString str = plItem->plottable()->name();
+        bool fit = false;
+        if(str.length()>4)
+            for(int i=0; i<str.length()-4; i++)
             {
-                if (newName==ui->CDplot->graph(i)->name())
-                {
-                    dup=true;
-                    break;
-                }
+                if(str[i]=='(' && str[i+1]=='f' && str[i+2]=='i' && str[i+3]=='t' && str[i+4]==':')
+                    fit = true;
             }
-            if(dup)
-                QMessageBox::warning(this, "Error","Graph name must be unique", QMessageBox::Ok);
-            else
+        if(!fit)
+        {
+            bool ok;
+            QString newName = QInputDialog::getText(this, "CDpal", "New graph name:", QLineEdit::Normal, plItem->plottable()->name(), &ok);
+            if (ok && newName!="")
             {
-                if(newName.length()>4)
-                    for(int i=0; i<newName.length()-4; i++)
-                    {
-                        if(newName[i]=='(' && newName[i+1]=='f' && newName[i+2]=='i' && newName[i+3]=='t' && newName[i+4]==':')
-                            fit=true;
-                    }
-                if(!fit)
+                bool dup=false;
+                for(int i=0; i<ui->CDplot->graphCount(); i++)
                 {
-                    plItem->plottable()->setName(newName);
-                    QString str2 =str;
-                    str2+="(fit:";
-                    for(int i=0; i<ui->graphBox->count(); i++)
+                    if (newName==ui->CDplot->graph(i)->name())
                     {
-                        if(ui->graphBox->itemText(i)==str)
-                        {
-                            ui->graphBox->setItemText(i,newName);
-                            ui->graphBox_2->setItemText(i,newName);
-                            ui->graphBox_3->setItemText(i,newName);
-                            ui->graphBox_4->setItemText(i,newName);
-                        }
-                        else if(str2.length()<ui->graphBox->itemText(i).length())
-                        {
-                            if(str2==ui->graphBox->itemText(i).mid(0,str2.length()))
-                            {
-                                QString newName2 = newName;
-                                newName2+="(fit:";
-                                newName2+=ui->graphBox->itemText(i).mid(str2.length());
-                                ui->graphBox->setItemText(i,newName2);
-                                ui->graphBox_2->setItemText(i,newName2);
-                                ui->graphBox_3->setItemText(i,newName2);
-                                ui->graphBox_4->setItemText(i,newName2);
-                            }
-                        }
+                        dup=true;
+                        break;
                     }
-                    for(int i =0; i<ui->CDplot->plottableCount();i++)
-                        if(str2.length()<ui->CDplot->plottable(i)->name().length())
+                }
+                if(dup)
+                    QMessageBox::warning(this, "Error","Graph name must be unique", QMessageBox::Ok);
+                else
+                {
+                    if(newName.length()>4)
+                        for(int i=0; i<newName.length()-4; i++)
                         {
-                            if(str2==ui->CDplot->plottable(i)->name().mid(0,str2.length()))
+                            if(newName[i]=='(' && newName[i+1]=='f' && newName[i+2]=='i' && newName[i+3]=='t' && newName[i+4]==':')
+                                fit=true;
+                        }
+                    if(!fit)
+                    {
+                        plItem->plottable()->setName(newName);
+                        QString str2 =str;
+                        str2+="(fit:";
+                        for(int i=0; i<ui->graphBox->count(); i++)
+                        {
+                            if(ui->graphBox->itemText(i)==str)
                             {
-                                QString newName2 = newName;
-                                newName2+="(fit:";
-                                newName2+=ui->CDplot->plottable(i)->name().mid(str2.length());
-                                ui->CDplot->plottable(i)->setName(newName2);
-                                extern std::vector< std::vector< std::string> > resultStrVec;
-                                for(unsigned int i=0; i<resultStrVec.size(); i++)
-                                    if(resultStrVec[i][1].length()>static_cast<unsigned int>(str.length()))
-                                        if(mconvert(resultStrVec[i][1]).mid(0,str.length())==str)
-                                        {
-                                            resultStrVec[i][1]=mconvert(newName2);
-                                            break;
-                                        }
+                                ui->graphBox->setItemText(i,newName);
+                                ui->graphBox_2->setItemText(i,newName);
+                                ui->graphBox_3->setItemText(i,newName);
+                                ui->graphBox_4->setItemText(i,newName);
+                                ui->graphBoxDiff->setItemText(i,newName);
+                            }
+                            else if(str2.length()<ui->graphBox->itemText(i).length())
+                            {
+                                if(str2==ui->graphBox->itemText(i).mid(0,str2.length()))
+                                {
+                                    QString newName2 = newName;
+                                    newName2+="(fit:";
+                                    newName2+=ui->graphBox->itemText(i).mid(str2.length());
+                                    ui->graphBox->setItemText(i,newName2);
+                                    ui->graphBox_2->setItemText(i,newName2);
+                                    ui->graphBox_3->setItemText(i,newName2);
+                                    ui->graphBox_4->setItemText(i,newName2);
+                                    ui->graphBoxDiff->setItemText(i,newName2);
+                                }
                             }
                         }
-                    ui->CDplot->replot();
+                        for(int i =0; i<ui->CDplot->plottableCount();i++)
+                            if(str2.length()<ui->CDplot->plottable(i)->name().length())
+                            {
+                                if(str2==ui->CDplot->plottable(i)->name().mid(0,str2.length()))
+                                {
+                                    QString newName2 = newName;
+                                    newName2+="(fit:";
+                                    newName2+=ui->CDplot->plottable(i)->name().mid(str2.length());
+                                    ui->CDplot->plottable(i)->setName(newName2);
+                                    extern std::vector< std::vector< std::string> > resultStrVec;
+                                    for(unsigned int i=0; i<resultStrVec.size(); i++)
+                                        if(resultStrVec[i][1].length()>static_cast<unsigned int>(str.length()))
+                                            if(mconvert(resultStrVec[i][1]).mid(0,str.length())==str)
+                                            {
+                                                resultStrVec[i][1]=mconvert(newName2);
+                                                break;
+                                            }
+                                }
+                            }
+                        ui->CDplot->replot();
+                    }
+                    else if(fit)
+                        QMessageBox::warning(this, "Error","Graph name is reserved for fitted graphs", QMessageBox::Ok);
                 }
-                else if(fit)
-                    QMessageBox::warning(this, "Error","Graph name is reserved for fitted graphs", QMessageBox::Ok);
             }
         }
     }
-  }
 }
 
 void CDpal::selectionChanged()
@@ -1543,7 +1829,7 @@ void CDpal::selectionChanged()
         return;
     if(!ui->CDplot->legend->item(ui->CDplot->graphCount()-1)->selected())
         removeHighlight();
-  /*
+    /*
    normally, axis base line, axis tick labels and axis labels are selectable separately, but we want
    the user only to be able to select the axis as a whole, so we tie the selected states of the tick labels
    and the axis base line together. However, the axis label shall be selectable individually.
@@ -1556,560 +1842,42 @@ void CDpal::selectionChanged()
    or on its legend item.
   */
 
-  // make top and bottom axes be selected synchronously, and handle axis and tick labels as one selectable object:
-  if (ui->CDplot->xAxis->selectedParts().testFlag(QCPAxis::spAxis) || ui->CDplot->xAxis->selectedParts().testFlag(QCPAxis::spTickLabels) ||
-      ui->CDplot->xAxis2->selectedParts().testFlag(QCPAxis::spAxis) || ui->CDplot->xAxis2->selectedParts().testFlag(QCPAxis::spTickLabels))
-  {
-    ui->CDplot->xAxis2->setSelectedParts(QCPAxis::spAxis|QCPAxis::spTickLabels);
-    ui->CDplot->xAxis->setSelectedParts(QCPAxis::spAxis|QCPAxis::spTickLabels);
-  }
-  // make left and right axes be selected synchronously, and handle axis and tick labels as one selectable object:
-  if (ui->CDplot->yAxis->selectedParts().testFlag(QCPAxis::spAxis) || ui->CDplot->yAxis->selectedParts().testFlag(QCPAxis::spTickLabels) ||
-      ui->CDplot->yAxis2->selectedParts().testFlag(QCPAxis::spAxis) || ui->CDplot->yAxis2->selectedParts().testFlag(QCPAxis::spTickLabels))
-  {
-    ui->CDplot->yAxis2->setSelectedParts(QCPAxis::spAxis|QCPAxis::spTickLabels);
-    ui->CDplot->yAxis->setSelectedParts(QCPAxis::spAxis|QCPAxis::spTickLabels);
-  }
-  // synchronize selection of graphs with selection of corresponding legend items:
-  bool found=false;
-  bool connected=false;
-  extern int highlightGraph;
-  for (int i=0; i<ui->CDplot->graphCount(); ++i)
-  {
-      if(i==highlightGraph-1 || i==highlightGraph)
-          i++;
-      if(i>=ui->CDplot->graphCount())
-          break;
-      QCPGraph *graph = ui->CDplot->graph(i);
-      if (graph->selected())
-      {
-          graph->setSelected(true);
-
-          {
-              QCPPlottableLegendItem *item = ui->CDplot->legend->itemWithPlottable(graph);
-              item->setSelected(true);
-          }
-          updateTable(i);
-          connected = true;
-          found=true;
-          if(graph->name().length()>4)
-          {
-              for(int j=0; j<graph->name().length()-4; j++)
-              {
-                  if(graph->name()[j]=='(' && graph->name()[j+1]=='f' && graph->name()[j+2]=='i' && graph->name()[j+3]=='t' && graph->name()[j+4]==':')
-                  {
-                      QString str = graph->name();
-                      extern std::vector< std::vector< std::string> > resultStrVec;
-                      for(unsigned int k=0; k<resultStrVec.size(); k++)
-                      {
-                          if(mconvert(resultStrVec[k][1])==str)
-                          {
-                              std::istringstream iss(resultStrVec[k][2]);
-                              std::string sub;
-                              int cc=1;
-                              iss >> sub;
-                              int model = atoi(sub.c_str());
-                              loadLabels(model);
-                              fillLabels(k, model);
-                              std::string pC;
-                              bool pCheck(true);
-                              if(model>2)
-                              {
-                                  iss>>sub;
-                                  pC= sub;
-                                  iss>>sub;
-                                  if(sub!="true")
-                                      pCheck=false;
-                              }
-                              while(iss>>sub)
-                              {
-                                  switch(model)
-                                  {
-                                  case 1:
-                                  {
-                                      ui->tabWidget->setCurrentIndex(0);
-                                      switch (cc)
-                                      {
-                                      case 1:
-                                          ui->deltaEdit->setText(mconvert(sub));
-                                          break;
-                                      case 2:
-                                          if(sub=="true")
-                                              ui->deltaBox->setChecked(true);
-                                          else
-                                              ui->deltaBox->setChecked(false);
-                                          break;
-                                      case 3:
-                                          ui->tmEdit->setText(mconvert(sub));
-                                          break;
-                                      case 4:
-                                          if(sub=="true")
-                                              ui->tmBox->setChecked(true);
-                                          else
-                                              ui->tmBox->setChecked(false);
-                                          break;
-                                      case 5:
-                                              ui->cpEdit->setText(mconvert(sub));
-                                          break;
-                                      case 6:
-                                              if(sub=="true")
-                                                  ui->cpBox->setChecked(true);
-                                              else
-                                                  ui->cpBox->setChecked(false);
-                                          break;
-                                      case 7:
-                                          ui->slope1Edit->setText(mconvert(sub));
-                                          break;
-                                      case 8:
-                                          if(sub=="true")
-                                              ui->slope1Box->setChecked(true);
-                                          else
-                                              ui->slope1Box->setChecked(false);
-                                          break;
-                                      case 9:
-                                          ui->intercept1Edit->setText(mconvert(sub));
-                                          break;
-                                      case 10:
-                                          if(sub=="true")
-                                              ui->intercept1Box->setChecked(true);
-                                          else
-                                              ui->intercept1Box->setChecked(false);
-                                          break;
-                                      case 11:
-                                          ui->slope2Edit->setText(mconvert(sub));
-                                          break;
-                                      case 12:
-                                          if(sub=="true")
-                                              ui->slope2Box->setChecked(true);
-                                          else
-                                              ui->slope2Box->setChecked(false);
-                                          break;
-                                      case 13:
-                                          ui->intercept2Edit->setText(mconvert(sub));
-                                          break;
-                                      case 14:
-                                          if(sub=="true")
-                                              ui->intercept2Box->setChecked(true);
-                                          else
-                                              ui->intercept2Box->setChecked(false);
-                                          break;
-                                      }
-                                      break;
-                                  }
-                                  case 2:
-                                  {
-                                      ui->tabWidget->setCurrentIndex(1);
-                                      switch (cc)
-                                      {
-                                      case 1:
-                                          ui->deltaEdit_2a->setText(mconvert(sub));
-                                          break;
-                                      case 2:
-                                          if(sub=="true")
-                                              ui->deltaBox_2a->setChecked(true);
-                                          else
-                                              ui->deltaBox_2a->setChecked(false);
-                                          break;
-                                      case 3:
-                                          ui->deltaEdit_2b->setText(mconvert(sub));
-                                          break;
-                                      case 4:
-                                          if(sub=="true")
-                                              ui->deltaBox_2b->setChecked(true);
-                                          else
-                                              ui->deltaBox_2b->setChecked(false);
-                                          break;
-                                      case 5:
-                                          ui->tmEdit_2a->setText(mconvert(sub));
-                                          break;
-                                      case 6:
-                                          if(sub=="true")
-                                              ui->tmBox_2a->setChecked(true);
-                                          else
-                                              ui->tmBox_2a->setChecked(false);
-                                          break;
-                                      case 7:
-                                          ui->tmEdit_2b->setText(mconvert(sub));
-                                          break;
-                                      case 8:
-                                          if(sub=="true")
-                                              ui->tmBox_2b->setChecked(true);
-                                          else
-                                              ui->tmBox_2b->setChecked(false);
-                                          break;
-                                      case 9:
-                                          ui->cpEdit_2a->setText(mconvert(sub));
-                                          break;
-                                      case 10:
-                                          if(sub=="true")
-                                              ui->cpBox_2a->setChecked(true);
-                                          else
-                                              ui->cpBox_2a->setChecked(false);
-                                          break;
-                                      case 11:
-                                          if(chemical)
-                                              ui->proteinBoxChemical->setText(mconvert(sub));
-                                          else
-                                              ui->cpEdit_2b->setText(mconvert(sub));
-                                          break;
-                                      case 12:
-                                          if(sub=="true")
-                                          {
-                                              if(chemical)
-                                                  ui->proteinFixChemical->setChecked(true);
-                                              else
-                                                  ui->cpBox_2b->setChecked(true);
-                                          }
-                                          else
-                                          {
-                                              if(chemical)
-                                                  ui->proteinFixChemical->setChecked(false);
-                                              else
-                                                  ui->cpBox_2b->setChecked(false);
-                                          }
-                                          break;
-                                      case 13:
-                                          ui->slopeEditN_2->setText(mconvert(sub));
-                                          break;
-                                      case 14:
-                                          if(sub=="true")
-                                              ui->slopeBoxN_2->setChecked(true);
-                                          else
-                                              ui->slopeBoxN_2->setChecked(false);
-                                          break;
-                                      case 15:
-                                          ui->interceptEditN_2->setText(mconvert(sub));
-                                          break;
-                                      case 16:
-                                          if(sub=="true")
-                                              ui->interceptBoxN_2->setChecked(true);
-                                          else
-                                              ui->interceptBoxN_2->setChecked(false);
-                                          break;
-                                      case 17:
-                                          ui->slopeEditI_2->setText(mconvert(sub));
-                                          break;
-                                      case 18:
-                                          if(sub=="true")
-                                              ui->slopeBoxI_2->setChecked(true);
-                                          else
-                                              ui->slopeBoxI_2->setChecked(false);
-                                          break;
-                                      case 19:
-                                          ui->interceptEditI_2->setText(mconvert(sub));
-                                          break;
-                                      case 20:
-                                          if(sub=="true")
-                                              ui->interceptBoxI_2->setChecked(true);
-                                          else
-                                              ui->interceptBoxI_2->setChecked(false);
-                                          break;
-                                      case 21:
-                                          ui->slopeEditD_2->setText(mconvert(sub));
-                                          break;
-                                      case 22:
-                                          if(sub=="true")
-                                              ui->slopeBoxD_2->setChecked(true);
-                                          else
-                                              ui->slopeBoxD_2->setChecked(false);
-                                          break;
-                                      case 23:
-                                          ui->interceptEditD_2->setText(mconvert(sub));
-                                          break;
-                                      case 24:
-                                          if(sub=="true")
-                                              ui->interceptBoxD_2->setChecked(true);
-                                          else
-                                              ui->interceptBoxD_2->setChecked(false);
-                                          break;
-                                      }
-                                      break;
-                                  }
-                                  case 3:
-                                  {
-                                      ui->tabWidget->setCurrentIndex(2);
-                                      switch (cc)
-                                      {
-                                      case 1:
-                                          ui->proteinBox_3->setText(mconvert(pC));
-                                          ui->proteinFix3->setChecked(pCheck);
-                                          ui->deltaEdit_3a->setText(mconvert(sub));
-                                          break;
-                                      case 2:
-                                          if(sub=="true")
-                                              ui->deltaBox_3a->setChecked(true);
-                                          else
-                                              ui->deltaBox_3a->setChecked(false);
-                                          break;
-                                      case 3:
-                                          ui->deltaEdit_3b->setText(mconvert(sub));
-                                          break;
-                                      case 4:
-                                          if(sub=="true")
-                                              ui->deltaBox_3b->setChecked(true);
-                                          else
-                                              ui->deltaBox_3b->setChecked(false);
-                                          break;
-                                      case 5:
-                                          ui->tmEdit_3a->setText(mconvert(sub));
-                                          break;
-                                      case 6:
-                                          if(sub=="true")
-                                              ui->tmBox_3a->setChecked(true);
-                                          else
-                                              ui->tmBox_3a->setChecked(false);
-                                          break;
-                                      case 7:
-                                          ui->tmEdit_3b->setText(mconvert(sub));
-                                          break;
-                                      case 8:
-                                          if(sub=="true")
-                                              ui->tmBox_3b->setChecked(true);
-                                          else
-                                              ui->tmBox_3b->setChecked(false);
-                                          break;
-                                      case 9:
-                                          ui->cpEdit_3a->setText(mconvert(sub));
-                                          break;
-                                      case 10:
-                                          if(sub=="true")
-                                              ui->cpBox_3a->setChecked(true);
-                                          else
-                                              ui->cpBox_3a->setChecked(false);
-                                          break;
-                                      case 11:
-                                          ui->cpEdit_3b->setText(mconvert(sub));
-                                          break;
-                                      case 12:
-                                          if(sub=="true")
-                                              ui->cpBox_3b->setChecked(true);
-                                          else
-                                              ui->cpBox_3b->setChecked(false);
-                                          break;
-                                      case 13:
-                                          ui->slopeEditN_3->setText(mconvert(sub));
-                                          break;
-                                      case 14:
-                                          if(sub=="true")
-                                              ui->slopeBoxN_3->setChecked(true);
-                                          else
-                                              ui->slopeBoxN_3->setChecked(false);
-                                          break;
-                                      case 15:
-                                          ui->interceptEditN_3->setText(mconvert(sub));
-                                          break;
-                                      case 16:
-                                          if(sub=="true")
-                                              ui->interceptBoxN_3->setChecked(true);
-                                          else
-                                              ui->interceptBoxN_3->setChecked(false);
-                                          break;
-                                      case 17:
-                                          ui->slopeEditI_3->setText(mconvert(sub));
-                                          break;
-                                      case 18:
-                                          if(sub=="true")
-                                              ui->slopeBoxI_3->setChecked(true);
-                                          else
-                                              ui->slopeBoxI_3->setChecked(false);
-                                          break;
-                                      case 19:
-                                          ui->interceptEditI_3->setText(mconvert(sub));
-                                          break;
-                                      case 20:
-                                          if(sub=="true")
-                                              ui->interceptBoxI_3->setChecked(true);
-                                          else
-                                              ui->interceptBoxI_3->setChecked(false);
-                                          break;
-                                      case 21:
-                                          ui->slopeEditD_3->setText(mconvert(sub));
-                                          break;
-                                      case 22:
-                                          if(sub=="true")
-                                              ui->slopeBoxD_3->setChecked(true);
-                                          else
-                                              ui->slopeBoxD_3->setChecked(false);
-                                          break;
-                                      case 23:
-                                          ui->interceptEditD_3->setText(mconvert(sub));
-                                          break;
-                                      case 24:
-                                          if(sub=="true")
-                                              ui->interceptBoxD_3->setChecked(true);
-                                          else
-                                              ui->interceptBoxD_3->setChecked(false);
-                                          break;
-                                      case 25:
-                                          if(sub=="true")
-                                              ui->proteinFix3->setChecked(true);
-                                          else
-                                              ui->proteinFix3->setChecked(false);
-                                          break;
-                                      }
-                                      break;
-                                  }
-                                  case 4:
-                                  {
-                                      ui->tabWidget->setCurrentIndex(3);
-                                      switch (cc)
-                                      {
-                                      case 1:
-                                          ui->proteinBox_4->setText(mconvert(pC));
-                                          ui->proteinFix4->setChecked(pCheck);
-                                          ui->deltaEdit_4a->setText(mconvert(sub));
-                                          break;
-                                      case 2:
-                                          if(sub=="true")
-                                              ui->deltaBox_4a->setChecked(true);
-                                          else
-                                              ui->deltaBox_4a->setChecked(false);
-                                          break;
-                                      case 3:
-                                          ui->deltaEdit_4b->setText(mconvert(sub));
-                                          break;
-                                      case 4:
-                                          if(sub=="true")
-                                              ui->deltaBox_4b->setChecked(true);
-                                          else
-                                              ui->deltaBox_4b->setChecked(false);
-                                          break;
-                                      case 5:
-                                          ui->tmEdit_4a->setText(mconvert(sub));
-                                          break;
-                                      case 6:
-                                          if(sub=="true")
-                                              ui->tmBox_4a->setChecked(true);
-                                          else
-                                              ui->tmBox_4a->setChecked(false);
-                                          break;
-                                      case 7:
-                                          ui->tmEdit_4b->setText(mconvert(sub));
-                                          break;
-                                      case 8:
-                                          if(sub=="true")
-                                              ui->tmBox_4b->setChecked(true);
-                                          else
-                                              ui->tmBox_4b->setChecked(false);
-                                          break;
-                                      case 9:
-                                          ui->cpEdit_4a->setText(mconvert(sub));
-                                          break;
-                                      case 10:
-                                          if(sub=="true")
-                                              ui->cpBox_4a->setChecked(true);
-                                          else
-                                              ui->cpBox_4a->setChecked(false);
-                                          break;
-                                      case 11:
-                                          ui->cpEdit_4b->setText(mconvert(sub));
-                                          break;
-                                      case 12:
-                                          if(sub=="true")
-                                              ui->cpBox_4b->setChecked(true);
-                                          else
-                                              ui->cpBox_4b->setChecked(false);
-                                          break;
-                                      case 13:
-                                          ui->slopeEditN_4->setText(mconvert(sub));
-                                          break;
-                                      case 14:
-                                          if(sub=="true")
-                                              ui->slopeBoxN_4->setChecked(true);
-                                          else
-                                              ui->slopeBoxN_4->setChecked(false);
-                                          break;
-                                      case 15:
-                                          ui->interceptEditN_4->setText(mconvert(sub));
-                                          break;
-                                      case 16:
-                                          if(sub=="true")
-                                              ui->interceptBoxN_4->setChecked(true);
-                                          else
-                                              ui->interceptBoxN_4->setChecked(false);
-                                          break;
-                                      case 17:
-                                          ui->slopeEditI_4->setText(mconvert(sub));
-                                          break;
-                                      case 18:
-                                          if(sub=="true")
-                                              ui->slopeBoxI_4->setChecked(true);
-                                          else
-                                              ui->slopeBoxI_4->setChecked(false);
-                                          break;
-                                      case 19:
-                                          ui->interceptEditI_4->setText(mconvert(sub));
-                                          break;
-                                      case 20:
-                                          if(sub=="true")
-                                              ui->interceptBoxI_4->setChecked(true);
-                                          else
-                                              ui->interceptBoxI_4->setChecked(false);
-                                          break;
-                                      case 21:
-                                          ui->slopeEditD_4->setText(mconvert(sub));
-                                          break;
-                                      case 22:
-                                          if(sub=="true")
-                                              ui->slopeBoxD_4->setChecked(true);
-                                          else
-                                              ui->slopeBoxD_4->setChecked(false);
-                                          break;
-                                      case 23:
-                                          ui->interceptEditD_4->setText(mconvert(sub));
-                                          break;
-                                      case 24:
-                                          if(sub=="true")
-                                              ui->interceptBoxD_4->setChecked(true);
-                                          else
-                                              ui->interceptBoxD_4->setChecked(false);
-                                          break;
-                                      case 25:
-                                          if(sub=="true")
-                                              ui->proteinFix4->setChecked(true);
-                                          else
-                                              ui->proteinFix4->setChecked(false);
-                                          break;
-                                      }
-                                      break;
-                                  }
-                                  }
-                                  cc++;
-                              }
-                              break;
-                          }
-                      }
-                  }
-              }
-          }
-      }
-  }
-  if(found==false)
-  {
-      bool selected =false;
-      for (int i=0; i<ui->CDplot->graphCount(); ++i)
-      {
-          QCPGraph *graph = ui->CDplot->graph(i);
-          QCPPlottableLegendItem *item = ui->CDplot->legend->itemWithPlottable(graph);
-          if(i==highlightGraph-1 ||highlightGraph==i)
-          {
-              if (item->selected())
-              {
-                  extern int activeGraph;
-                  activeGraph=-1;
-                  break;
-              }
-              i++;
-          }
-          if(i>=ui->CDplot->graphCount())
-              break;
-        if (item->selected())
+    // make top and bottom axes be selected synchronously, and handle axis and tick labels as one selectable object:
+    if (ui->CDplot->xAxis->selectedParts().testFlag(QCPAxis::spAxis) || ui->CDplot->xAxis->selectedParts().testFlag(QCPAxis::spTickLabels) ||
+            ui->CDplot->xAxis2->selectedParts().testFlag(QCPAxis::spAxis) || ui->CDplot->xAxis2->selectedParts().testFlag(QCPAxis::spTickLabels))
+    {
+        ui->CDplot->xAxis2->setSelectedParts(QCPAxis::spAxis|QCPAxis::spTickLabels);
+        ui->CDplot->xAxis->setSelectedParts(QCPAxis::spAxis|QCPAxis::spTickLabels);
+    }
+    // make left and right axes be selected synchronously, and handle axis and tick labels as one selectable object:
+    if (ui->CDplot->yAxis->selectedParts().testFlag(QCPAxis::spAxis) || ui->CDplot->yAxis->selectedParts().testFlag(QCPAxis::spTickLabels) ||
+            ui->CDplot->yAxis2->selectedParts().testFlag(QCPAxis::spAxis) || ui->CDplot->yAxis2->selectedParts().testFlag(QCPAxis::spTickLabels))
+    {
+        ui->CDplot->yAxis2->setSelectedParts(QCPAxis::spAxis|QCPAxis::spTickLabels);
+        ui->CDplot->yAxis->setSelectedParts(QCPAxis::spAxis|QCPAxis::spTickLabels);
+    }
+    // synchronize selection of graphs with selection of corresponding legend items:
+    bool found=false;
+    bool connected=false;
+    extern int highlightGraph;
+    for (int i=0; i<ui->CDplot->graphCount(); ++i)
+    {
+        if(i==highlightGraph-1 || i==highlightGraph)
+            i++;
+        if(i>=ui->CDplot->graphCount())
+            break;
+        QCPGraph *graph = ui->CDplot->graph(i);
+        if (graph->selected())
         {
-            connected=true;
-            selected = true;
             graph->setSelected(true);
-            item->setSelected(true);
+
+            {
+                QCPPlottableLegendItem *item = ui->CDplot->legend->itemWithPlottable(graph);
+                item->setSelected(true);
+            }
             updateTable(i);
+            connected = true;
+            found=true;
             if(graph->name().length()>4)
             {
                 for(int j=0; j<graph->name().length()-4; j++)
@@ -2131,7 +1899,7 @@ void CDpal::selectionChanged()
                                 fillLabels(k, model);
                                 std::string pC;
                                 bool pCheck(true);
-                                if(model>2)
+                                if(model>2 && model!=5)
                                 {
                                     iss>>sub;
                                     pC= sub;
@@ -2271,17 +2039,17 @@ void CDpal::selectionChanged()
                                                 ui->cpEdit_2b->setText(mconvert(sub));
                                             break;
                                         case 12:
-                                            if(chemical)
+                                            if(sub=="true")
                                             {
-                                                if(sub=="true")
+                                                if(chemical)
                                                     ui->proteinFixChemical->setChecked(true);
                                                 else
-                                                    ui->proteinFixChemical->setChecked(false);
+                                                    ui->cpBox_2b->setChecked(true);
                                             }
                                             else
                                             {
-                                                if(sub=="true")
-                                                    ui->cpBox_2b->setChecked(true);
+                                                if(chemical)
+                                                    ui->proteinFixChemical->setChecked(false);
                                                 else
                                                     ui->cpBox_2b->setChecked(false);
                                             }
@@ -2458,6 +2226,12 @@ void CDpal::selectionChanged()
                                             else
                                                 ui->interceptBoxD_3->setChecked(false);
                                             break;
+                                        case 25:
+                                            if(sub=="true")
+                                                ui->proteinFix3->setChecked(true);
+                                            else
+                                                ui->proteinFix3->setChecked(false);
+                                            break;
                                         }
                                         break;
                                     }
@@ -2576,6 +2350,48 @@ void CDpal::selectionChanged()
                                             else
                                                 ui->interceptBoxD_4->setChecked(false);
                                             break;
+                                        case 25:
+                                            if(sub=="true")
+                                                ui->proteinFix4->setChecked(true);
+                                            else
+                                                ui->proteinFix4->setChecked(false);
+                                            break;
+                                        }
+                                        break;
+                                    }
+                                    case 5:
+                                    {
+                                        switch (cc)
+                                        {
+                                        case 1:
+                                            ui->deltaEditDiff->setText(mconvert(sub));
+                                            break;
+                                        case 2:
+                                            if(sub=="true")
+                                                ui->deltaBoxDiff->setChecked(true);
+                                            else
+                                                ui->deltaBoxDiff->setChecked(false);
+                                            break;
+                                        case 3:
+                                            ui->tmEditDiff->setText(mconvert(sub));
+                                            break;
+                                        case 4:
+                                            if(sub=="true")
+                                                ui->tmBoxDiff->setChecked(true);
+                                            else
+                                                ui->tmBoxDiff->setChecked(false);
+                                            break;
+                                        case 5:
+                                            ui->aEditDiff->setText(mconvert(sub));
+                                            break;
+                                        case 6:
+                                            if(sub=="true")
+                                                ui->aBoxDiff->setChecked(true);
+                                            else
+                                                ui->aBoxDiff->setChecked(false);
+                                            break;
+                                        default:
+                                            break;
                                         }
                                         break;
                                     }
@@ -2588,58 +2404,595 @@ void CDpal::selectionChanged()
                     }
                 }
             }
-            break;
         }
-        else
+    }
+    if(found==false)
+    {
+        bool selected =false;
+        for (int i=0; i<ui->CDplot->graphCount(); ++i)
         {
-            updateTable(ui->CDplot->graphCount()-1);
+            QCPGraph *graph = ui->CDplot->graph(i);
+            QCPPlottableLegendItem *item = ui->CDplot->legend->itemWithPlottable(graph);
+            if(i==highlightGraph-1 ||highlightGraph==i)
+            {
+                if (item->selected())
+                {
+                    extern int activeGraph;
+                    activeGraph=-1;
+                    break;
+                }
+                i++;
+            }
+            if(i>=ui->CDplot->graphCount())
+                break;
+            if (item->selected())
+            {
+                connected=true;
+                selected = true;
+                graph->setSelected(true);
+                item->setSelected(true);
+                updateTable(i);
+                if(graph->name().contains("(fit:"))
+                {
+                    QString str = graph->name();
+                    extern std::vector< std::vector< std::string> > resultStrVec;
+                    for(unsigned int k=0; k<resultStrVec.size(); k++)
+                    {
+                        if(mconvert(resultStrVec[k][1])==str)
+                        {
+                            std::istringstream iss(resultStrVec[k][2]);
+                            std::string sub;
+                            int cc=1;
+                            iss >> sub;
+                            int model = atoi(sub.c_str());
+                            loadLabels(model);
+                            fillLabels(k, model);
+                            std::string pC;
+                            bool pCheck(true);
+                            if(model>2 && model !=5)
+                            {
+                                iss>>sub;
+                                pC= sub;
+                                iss>>sub;
+                                if(sub!="true")
+                                    pCheck=false;
+                            }
+                            while(iss>>sub)
+                            {
+                                switch(model)
+                                {
+                                case 1:
+                                {
+                                    ui->tabWidget->setCurrentIndex(0);
+                                    switch (cc)
+                                    {
+                                    case 1:
+                                        ui->deltaEdit->setText(mconvert(sub));
+                                        break;
+                                    case 2:
+                                        if(sub=="true")
+                                            ui->deltaBox->setChecked(true);
+                                        else
+                                            ui->deltaBox->setChecked(false);
+                                        break;
+                                    case 3:
+                                        ui->tmEdit->setText(mconvert(sub));
+                                        break;
+                                    case 4:
+                                        if(sub=="true")
+                                            ui->tmBox->setChecked(true);
+                                        else
+                                            ui->tmBox->setChecked(false);
+                                        break;
+                                    case 5:
+                                        ui->cpEdit->setText(mconvert(sub));
+                                        break;
+                                    case 6:
+                                        if(sub=="true")
+                                            ui->cpBox->setChecked(true);
+                                        else
+                                            ui->cpBox->setChecked(false);
+                                        break;
+                                    case 7:
+                                        ui->slope1Edit->setText(mconvert(sub));
+                                        break;
+                                    case 8:
+                                        if(sub=="true")
+                                            ui->slope1Box->setChecked(true);
+                                        else
+                                            ui->slope1Box->setChecked(false);
+                                        break;
+                                    case 9:
+                                        ui->intercept1Edit->setText(mconvert(sub));
+                                        break;
+                                    case 10:
+                                        if(sub=="true")
+                                            ui->intercept1Box->setChecked(true);
+                                        else
+                                            ui->intercept1Box->setChecked(false);
+                                        break;
+                                    case 11:
+                                        ui->slope2Edit->setText(mconvert(sub));
+                                        break;
+                                    case 12:
+                                        if(sub=="true")
+                                            ui->slope2Box->setChecked(true);
+                                        else
+                                            ui->slope2Box->setChecked(false);
+                                        break;
+                                    case 13:
+                                        ui->intercept2Edit->setText(mconvert(sub));
+                                        break;
+                                    case 14:
+                                        if(sub=="true")
+                                            ui->intercept2Box->setChecked(true);
+                                        else
+                                            ui->intercept2Box->setChecked(false);
+                                        break;
+                                    }
+                                    break;
+                                }
+                                case 2:
+                                {
+                                    ui->tabWidget->setCurrentIndex(1);
+                                    switch (cc)
+                                    {
+                                    case 1:
+                                        ui->deltaEdit_2a->setText(mconvert(sub));
+                                        break;
+                                    case 2:
+                                        if(sub=="true")
+                                            ui->deltaBox_2a->setChecked(true);
+                                        else
+                                            ui->deltaBox_2a->setChecked(false);
+                                        break;
+                                    case 3:
+                                        ui->deltaEdit_2b->setText(mconvert(sub));
+                                        break;
+                                    case 4:
+                                        if(sub=="true")
+                                            ui->deltaBox_2b->setChecked(true);
+                                        else
+                                            ui->deltaBox_2b->setChecked(false);
+                                        break;
+                                    case 5:
+                                        ui->tmEdit_2a->setText(mconvert(sub));
+                                        break;
+                                    case 6:
+                                        if(sub=="true")
+                                            ui->tmBox_2a->setChecked(true);
+                                        else
+                                            ui->tmBox_2a->setChecked(false);
+                                        break;
+                                    case 7:
+                                        ui->tmEdit_2b->setText(mconvert(sub));
+                                        break;
+                                    case 8:
+                                        if(sub=="true")
+                                            ui->tmBox_2b->setChecked(true);
+                                        else
+                                            ui->tmBox_2b->setChecked(false);
+                                        break;
+                                    case 9:
+                                        ui->cpEdit_2a->setText(mconvert(sub));
+                                        break;
+                                    case 10:
+                                        if(sub=="true")
+                                            ui->cpBox_2a->setChecked(true);
+                                        else
+                                            ui->cpBox_2a->setChecked(false);
+                                        break;
+                                    case 11:
+                                        if(chemical)
+                                            ui->proteinBoxChemical->setText(mconvert(sub));
+                                        else
+                                            ui->cpEdit_2b->setText(mconvert(sub));
+                                        break;
+                                    case 12:
+                                        if(chemical)
+                                        {
+                                            if(sub=="true")
+                                                ui->proteinFixChemical->setChecked(true);
+                                            else
+                                                ui->proteinFixChemical->setChecked(false);
+                                        }
+                                        else
+                                        {
+                                            if(sub=="true")
+                                                ui->cpBox_2b->setChecked(true);
+                                            else
+                                                ui->cpBox_2b->setChecked(false);
+                                        }
+                                        break;
+                                    case 13:
+                                        ui->slopeEditN_2->setText(mconvert(sub));
+                                        break;
+                                    case 14:
+                                        if(sub=="true")
+                                            ui->slopeBoxN_2->setChecked(true);
+                                        else
+                                            ui->slopeBoxN_2->setChecked(false);
+                                        break;
+                                    case 15:
+                                        ui->interceptEditN_2->setText(mconvert(sub));
+                                        break;
+                                    case 16:
+                                        if(sub=="true")
+                                            ui->interceptBoxN_2->setChecked(true);
+                                        else
+                                            ui->interceptBoxN_2->setChecked(false);
+                                        break;
+                                    case 17:
+                                        ui->slopeEditI_2->setText(mconvert(sub));
+                                        break;
+                                    case 18:
+                                        if(sub=="true")
+                                            ui->slopeBoxI_2->setChecked(true);
+                                        else
+                                            ui->slopeBoxI_2->setChecked(false);
+                                        break;
+                                    case 19:
+                                        ui->interceptEditI_2->setText(mconvert(sub));
+                                        break;
+                                    case 20:
+                                        if(sub=="true")
+                                            ui->interceptBoxI_2->setChecked(true);
+                                        else
+                                            ui->interceptBoxI_2->setChecked(false);
+                                        break;
+                                    case 21:
+                                        ui->slopeEditD_2->setText(mconvert(sub));
+                                        break;
+                                    case 22:
+                                        if(sub=="true")
+                                            ui->slopeBoxD_2->setChecked(true);
+                                        else
+                                            ui->slopeBoxD_2->setChecked(false);
+                                        break;
+                                    case 23:
+                                        ui->interceptEditD_2->setText(mconvert(sub));
+                                        break;
+                                    case 24:
+                                        if(sub=="true")
+                                            ui->interceptBoxD_2->setChecked(true);
+                                        else
+                                            ui->interceptBoxD_2->setChecked(false);
+                                        break;
+                                    }
+                                    break;
+                                }
+                                case 3:
+                                {
+                                    ui->tabWidget->setCurrentIndex(2);
+                                    switch (cc)
+                                    {
+                                    case 1:
+                                        ui->proteinBox_3->setText(mconvert(pC));
+                                        ui->proteinFix3->setChecked(pCheck);
+                                        ui->deltaEdit_3a->setText(mconvert(sub));
+                                        break;
+                                    case 2:
+                                        if(sub=="true")
+                                            ui->deltaBox_3a->setChecked(true);
+                                        else
+                                            ui->deltaBox_3a->setChecked(false);
+                                        break;
+                                    case 3:
+                                        ui->deltaEdit_3b->setText(mconvert(sub));
+                                        break;
+                                    case 4:
+                                        if(sub=="true")
+                                            ui->deltaBox_3b->setChecked(true);
+                                        else
+                                            ui->deltaBox_3b->setChecked(false);
+                                        break;
+                                    case 5:
+                                        ui->tmEdit_3a->setText(mconvert(sub));
+                                        break;
+                                    case 6:
+                                        if(sub=="true")
+                                            ui->tmBox_3a->setChecked(true);
+                                        else
+                                            ui->tmBox_3a->setChecked(false);
+                                        break;
+                                    case 7:
+                                        ui->tmEdit_3b->setText(mconvert(sub));
+                                        break;
+                                    case 8:
+                                        if(sub=="true")
+                                            ui->tmBox_3b->setChecked(true);
+                                        else
+                                            ui->tmBox_3b->setChecked(false);
+                                        break;
+                                    case 9:
+                                        ui->cpEdit_3a->setText(mconvert(sub));
+                                        break;
+                                    case 10:
+                                        if(sub=="true")
+                                            ui->cpBox_3a->setChecked(true);
+                                        else
+                                            ui->cpBox_3a->setChecked(false);
+                                        break;
+                                    case 11:
+                                        ui->cpEdit_3b->setText(mconvert(sub));
+                                        break;
+                                    case 12:
+                                        if(sub=="true")
+                                            ui->cpBox_3b->setChecked(true);
+                                        else
+                                            ui->cpBox_3b->setChecked(false);
+                                        break;
+                                    case 13:
+                                        ui->slopeEditN_3->setText(mconvert(sub));
+                                        break;
+                                    case 14:
+                                        if(sub=="true")
+                                            ui->slopeBoxN_3->setChecked(true);
+                                        else
+                                            ui->slopeBoxN_3->setChecked(false);
+                                        break;
+                                    case 15:
+                                        ui->interceptEditN_3->setText(mconvert(sub));
+                                        break;
+                                    case 16:
+                                        if(sub=="true")
+                                            ui->interceptBoxN_3->setChecked(true);
+                                        else
+                                            ui->interceptBoxN_3->setChecked(false);
+                                        break;
+                                    case 17:
+                                        ui->slopeEditI_3->setText(mconvert(sub));
+                                        break;
+                                    case 18:
+                                        if(sub=="true")
+                                            ui->slopeBoxI_3->setChecked(true);
+                                        else
+                                            ui->slopeBoxI_3->setChecked(false);
+                                        break;
+                                    case 19:
+                                        ui->interceptEditI_3->setText(mconvert(sub));
+                                        break;
+                                    case 20:
+                                        if(sub=="true")
+                                            ui->interceptBoxI_3->setChecked(true);
+                                        else
+                                            ui->interceptBoxI_3->setChecked(false);
+                                        break;
+                                    case 21:
+                                        ui->slopeEditD_3->setText(mconvert(sub));
+                                        break;
+                                    case 22:
+                                        if(sub=="true")
+                                            ui->slopeBoxD_3->setChecked(true);
+                                        else
+                                            ui->slopeBoxD_3->setChecked(false);
+                                        break;
+                                    case 23:
+                                        ui->interceptEditD_3->setText(mconvert(sub));
+                                        break;
+                                    case 24:
+                                        if(sub=="true")
+                                            ui->interceptBoxD_3->setChecked(true);
+                                        else
+                                            ui->interceptBoxD_3->setChecked(false);
+                                        break;
+                                    }
+                                    break;
+                                }
+                                case 4:
+                                {
+                                    ui->tabWidget->setCurrentIndex(3);
+                                    switch (cc)
+                                    {
+                                    case 1:
+                                        ui->proteinBox_4->setText(mconvert(pC));
+                                        ui->proteinFix4->setChecked(pCheck);
+                                        ui->deltaEdit_4a->setText(mconvert(sub));
+                                        break;
+                                    case 2:
+                                        if(sub=="true")
+                                            ui->deltaBox_4a->setChecked(true);
+                                        else
+                                            ui->deltaBox_4a->setChecked(false);
+                                        break;
+                                    case 3:
+                                        ui->deltaEdit_4b->setText(mconvert(sub));
+                                        break;
+                                    case 4:
+                                        if(sub=="true")
+                                            ui->deltaBox_4b->setChecked(true);
+                                        else
+                                            ui->deltaBox_4b->setChecked(false);
+                                        break;
+                                    case 5:
+                                        ui->tmEdit_4a->setText(mconvert(sub));
+                                        break;
+                                    case 6:
+                                        if(sub=="true")
+                                            ui->tmBox_4a->setChecked(true);
+                                        else
+                                            ui->tmBox_4a->setChecked(false);
+                                        break;
+                                    case 7:
+                                        ui->tmEdit_4b->setText(mconvert(sub));
+                                        break;
+                                    case 8:
+                                        if(sub=="true")
+                                            ui->tmBox_4b->setChecked(true);
+                                        else
+                                            ui->tmBox_4b->setChecked(false);
+                                        break;
+                                    case 9:
+                                        ui->cpEdit_4a->setText(mconvert(sub));
+                                        break;
+                                    case 10:
+                                        if(sub=="true")
+                                            ui->cpBox_4a->setChecked(true);
+                                        else
+                                            ui->cpBox_4a->setChecked(false);
+                                        break;
+                                    case 11:
+                                        ui->cpEdit_4b->setText(mconvert(sub));
+                                        break;
+                                    case 12:
+                                        if(sub=="true")
+                                            ui->cpBox_4b->setChecked(true);
+                                        else
+                                            ui->cpBox_4b->setChecked(false);
+                                        break;
+                                    case 13:
+                                        ui->slopeEditN_4->setText(mconvert(sub));
+                                        break;
+                                    case 14:
+                                        if(sub=="true")
+                                            ui->slopeBoxN_4->setChecked(true);
+                                        else
+                                            ui->slopeBoxN_4->setChecked(false);
+                                        break;
+                                    case 15:
+                                        ui->interceptEditN_4->setText(mconvert(sub));
+                                        break;
+                                    case 16:
+                                        if(sub=="true")
+                                            ui->interceptBoxN_4->setChecked(true);
+                                        else
+                                            ui->interceptBoxN_4->setChecked(false);
+                                        break;
+                                    case 17:
+                                        ui->slopeEditI_4->setText(mconvert(sub));
+                                        break;
+                                    case 18:
+                                        if(sub=="true")
+                                            ui->slopeBoxI_4->setChecked(true);
+                                        else
+                                            ui->slopeBoxI_4->setChecked(false);
+                                        break;
+                                    case 19:
+                                        ui->interceptEditI_4->setText(mconvert(sub));
+                                        break;
+                                    case 20:
+                                        if(sub=="true")
+                                            ui->interceptBoxI_4->setChecked(true);
+                                        else
+                                            ui->interceptBoxI_4->setChecked(false);
+                                        break;
+                                    case 21:
+                                        ui->slopeEditD_4->setText(mconvert(sub));
+                                        break;
+                                    case 22:
+                                        if(sub=="true")
+                                            ui->slopeBoxD_4->setChecked(true);
+                                        else
+                                            ui->slopeBoxD_4->setChecked(false);
+                                        break;
+                                    case 23:
+                                        ui->interceptEditD_4->setText(mconvert(sub));
+                                        break;
+                                    case 24:
+                                        if(sub=="true")
+                                            ui->interceptBoxD_4->setChecked(true);
+                                        else
+                                            ui->interceptBoxD_4->setChecked(false);
+                                        break;
+                                    }
+                                    break;
+                                }
+                                case 5:
+                                {
+                                    switch (cc)
+                                    {
+                                    case 1:
+                                        ui->deltaEditDiff->setText(mconvert(sub));
+                                        break;
+                                    case 2:
+                                        if(sub=="true")
+                                            ui->deltaBoxDiff->setChecked(true);
+                                        else
+                                            ui->deltaBoxDiff->setChecked(false);
+                                        break;
+                                    case 3:
+                                        ui->tmEditDiff->setText(mconvert(sub));
+                                        break;
+                                    case 4:
+                                        if(sub=="true")
+                                            ui->tmBoxDiff->setChecked(true);
+                                        else
+                                            ui->tmBoxDiff->setChecked(false);
+                                        break;
+                                    case 5:
+                                        ui->aEditDiff->setText(mconvert(sub));
+                                        break;
+                                    case 6:
+                                        if(sub=="true")
+                                            ui->aBoxDiff->setChecked(true);
+                                        else
+                                            ui->aBoxDiff->setChecked(false);
+                                        break;
+                                    default:
+                                        break;
+                                    }
+                                    break;
+                                }
+                                }
+                                cc++;
+                            }
+                            break;
+                        }
+                    }
+                }
+                break;
+            }
+            else
+            {
+                updateTable(ui->CDplot->graphCount()-1);
 
+            }
         }
-      }
-      if(selected==false)
-      {
-          disconnect(ui->actionColor,SIGNAL(triggered()),this,SLOT(colorGraph()));
-          disconnect(ui->actionChange_style,SIGNAL(triggered()),this,SLOT(changeOrnament()));
-          disconnect(ui->actionChange_pen_width,SIGNAL(triggered()),this,SLOT(changeWidth()));
-          ui->actionChange_style->setDisabled(true);
-          ui->actionChange_pen_width->setDisabled(true);
-          ui->actionColor->setDisabled(true);
-          disconnect(ui->actionDelete_graph,SIGNAL(triggered()),this,SLOT(removeSelectedGraph()));
-          ui->actionDelete_graph->setDisabled(true);
-          updateTable(ui->CDplot->graphCount()-1);
-      }
-  }
-  for(int i=0; i<ui->CDplot->graphCount(); i++)
-  {
-      if(ui->CDplot->graph(i)->selected() && i<ui->graphBox->count())
-      {
-          ui->graphBox->setCurrentIndex(i);
-          ui->graphBox_2->setCurrentIndex(i);
-          ui->graphBox_3->setCurrentIndex(i);
-          ui->graphBox_4->setCurrentIndex(i);
-      }
-  }
-  if(connected)
-  {
-      disconnect(ui->actionColor,SIGNAL(triggered()),this,SLOT(colorGraph()));
-      disconnect(ui->actionChange_style,SIGNAL(triggered()),this,SLOT(changeOrnament()));
-      disconnect(ui->actionChange_pen_width,SIGNAL(triggered()),this,SLOT(changeWidth()));
-      ui->actionChange_style->setDisabled(true);
-      ui->actionChange_pen_width->setDisabled(true);
-      ui->actionColor->setDisabled(true);
-      disconnect(ui->actionDelete_graph,SIGNAL(triggered()),this,SLOT(removeSelectedGraph()));
-      ui->actionDelete_graph->setDisabled(true);
-      connect(ui->actionColor,SIGNAL(triggered()),this,SLOT(colorGraph()));
-      ui->actionColor->setEnabled(true);
-      connect(ui->actionChange_style,SIGNAL(triggered()),this,SLOT(changeOrnament()));
-      connect(ui->actionChange_pen_width,SIGNAL(triggered()),this,SLOT(changeWidth()));
-      ui->actionChange_style->setEnabled(true);
-      ui->actionChange_pen_width->setEnabled(true);
-      connect(ui->actionDelete_graph,SIGNAL(triggered()),this,SLOT(removeSelectedGraph()));
-      ui->actionDelete_graph->setEnabled(true);
-      ui->actionDelete_all_graphs->setEnabled(true);
-      ui->actionDelete_fitted_graphs->setEnabled(true);
-  }
+        if(selected==false)
+        {
+            disconnect(ui->actionColor,SIGNAL(triggered()),this,SLOT(colorGraph()));
+            disconnect(ui->actionChange_style,SIGNAL(triggered()),this,SLOT(changeOrnament()));
+            disconnect(ui->actionChange_pen_width,SIGNAL(triggered()),this,SLOT(changeWidth()));
+            ui->actionChange_style->setDisabled(true);
+            ui->actionChange_pen_width->setDisabled(true);
+            ui->actionColor->setDisabled(true);
+            disconnect(ui->actionDelete_graph,SIGNAL(triggered()),this,SLOT(removeSelectedGraph()));
+            ui->actionDelete_graph->setDisabled(true);
+            updateTable(ui->CDplot->graphCount()-1);
+        }
+    }
+    for(int i=0; i<ui->CDplot->graphCount(); i++)
+    {
+        if(ui->CDplot->graph(i)->selected() && i<ui->graphBox->count())
+        {
+            ui->graphBox->setCurrentIndex(i);
+            ui->graphBox_2->setCurrentIndex(i);
+            ui->graphBox_3->setCurrentIndex(i);
+            ui->graphBox_4->setCurrentIndex(i);
+            ui->graphBoxDiff->setCurrentIndex(i);
+        }
+    }
+    if(connected)
+    {
+        disconnect(ui->actionColor,SIGNAL(triggered()),this,SLOT(colorGraph()));
+        disconnect(ui->actionChange_style,SIGNAL(triggered()),this,SLOT(changeOrnament()));
+        disconnect(ui->actionChange_pen_width,SIGNAL(triggered()),this,SLOT(changeWidth()));
+        ui->actionChange_style->setDisabled(true);
+        ui->actionChange_pen_width->setDisabled(true);
+        ui->actionColor->setDisabled(true);
+        disconnect(ui->actionDelete_graph,SIGNAL(triggered()),this,SLOT(removeSelectedGraph()));
+        ui->actionDelete_graph->setDisabled(true);
+        connect(ui->actionColor,SIGNAL(triggered()),this,SLOT(colorGraph()));
+        ui->actionColor->setEnabled(true);
+        connect(ui->actionChange_style,SIGNAL(triggered()),this,SLOT(changeOrnament()));
+        connect(ui->actionChange_pen_width,SIGNAL(triggered()),this,SLOT(changeWidth()));
+        ui->actionChange_style->setEnabled(true);
+        ui->actionChange_pen_width->setEnabled(true);
+        connect(ui->actionDelete_graph,SIGNAL(triggered()),this,SLOT(removeSelectedGraph()));
+        ui->actionDelete_graph->setEnabled(true);
+        ui->actionDelete_all_graphs->setEnabled(true);
+        ui->actionDelete_fitted_graphs->setEnabled(true);
+    }
 }
 
 void CDpal::updateTable(int graphNo)
@@ -2667,7 +3020,7 @@ void CDpal::updateTable(int graphNo)
                 ui->table->setColumnCount(3);
                 break;
             }
-             j++;
+            j++;
         }
         if(ui->table->columnCount()==0)
             ui->table->setColumnCount(2);
@@ -2716,28 +3069,28 @@ void CDpal::updateTable(int graphNo)
 
 void CDpal::mousePress()
 {
-  // if an axis is selected, only allow the direction of that axis to be dragged
-  // if no axis is selected, both directions may be dragged
+    // if an axis is selected, only allow the direction of that axis to be dragged
+    // if no axis is selected, both directions may be dragged
 
-  if (ui->CDplot->xAxis->selectedParts().testFlag(QCPAxis::spAxis))
-    ui->CDplot->axisRect()->setRangeDrag(ui->CDplot->xAxis->orientation());
-  else if (ui->CDplot->yAxis->selectedParts().testFlag(QCPAxis::spAxis))
-    ui->CDplot->axisRect()->setRangeDrag(ui->CDplot->yAxis->orientation());
-  else
-    ui->CDplot->axisRect()->setRangeDrag(Qt::Horizontal|Qt::Vertical);
+    if (ui->CDplot->xAxis->selectedParts().testFlag(QCPAxis::spAxis))
+        ui->CDplot->axisRect()->setRangeDrag(ui->CDplot->xAxis->orientation());
+    else if (ui->CDplot->yAxis->selectedParts().testFlag(QCPAxis::spAxis))
+        ui->CDplot->axisRect()->setRangeDrag(ui->CDplot->yAxis->orientation());
+    else
+        ui->CDplot->axisRect()->setRangeDrag(Qt::Horizontal|Qt::Vertical);
 }
 
 void CDpal::mouseWheel()
 {
-  // if an axis is selected, only allow the direction of that axis to be zoomed
-  // if no axis is selected, both directions may be zoomed
+    // if an axis is selected, only allow the direction of that axis to be zoomed
+    // if no axis is selected, both directions may be zoomed
 
-  if (ui->CDplot->xAxis->selectedParts().testFlag(QCPAxis::spAxis))
-    ui->CDplot->axisRect()->setRangeZoom(ui->CDplot->xAxis->orientation());
-  else if (ui->CDplot->yAxis->selectedParts().testFlag(QCPAxis::spAxis))
-    ui->CDplot->axisRect()->setRangeZoom(ui->CDplot->yAxis->orientation());
-  else
-    ui->CDplot->axisRect()->setRangeZoom(Qt::Horizontal|Qt::Vertical);
+    if (ui->CDplot->xAxis->selectedParts().testFlag(QCPAxis::spAxis))
+        ui->CDplot->axisRect()->setRangeZoom(ui->CDplot->xAxis->orientation());
+    else if (ui->CDplot->yAxis->selectedParts().testFlag(QCPAxis::spAxis))
+        ui->CDplot->axisRect()->setRangeZoom(ui->CDplot->yAxis->orientation());
+    else
+        ui->CDplot->axisRect()->setRangeZoom(Qt::Horizontal|Qt::Vertical);
 }
 
 void CDpal::removeSelectedGraph()
@@ -2753,104 +3106,110 @@ void CDpal::removeSelectedGraph()
         qApp->setQuitOnLastWindowClosed(false);
         int ret = msgBox.exec();
         switch (ret) {
-           case QMessageBox::Ok:
+        case QMessageBox::Ok:
+        {
+            if (ui->CDplot->selectedGraphs().size() > 0)
+            {
+                ui->CDplot->removeGraph(ui->CDplot->selectedGraphs().first());
+                ui->CDplot->replot();
+            }
+            if(ui->CDplot->graphCount()==0)
+            {
+                ui->graphBox->clear();
+                ui->graphBox_2->clear();
+                ui->graphBox_3->clear();
+                ui->graphBox_4->clear();
+                ui->graphBoxDiff->clear();
+            }
+            for(int j=0; j<ui->CDplot->graphCount(); j++)
+            {
+                if(ui->CDplot->graph(j)->name()!=ui->graphBox->itemText(j))
                 {
-                     if (ui->CDplot->selectedGraphs().size() > 0)
-                     {
-                          ui->CDplot->removeGraph(ui->CDplot->selectedGraphs().first());
-                          ui->CDplot->replot();
-                     }
-                     if(ui->CDplot->graphCount()==0)
-                     {
-                         ui->graphBox->clear();
-                         ui->graphBox_2->clear();
-                         ui->graphBox_3->clear();
-                         ui->graphBox_4->clear();
-                     }
-                     for(int j=0; j<ui->CDplot->graphCount(); j++)
-                     {
-                         if(ui->CDplot->graph(j)->name()!=ui->graphBox->itemText(j))
-                         {
-                             ui->graphBox->removeItem(j);
-                             ui->graphBox_2->removeItem(j);
-                             ui->graphBox_3->removeItem(j);
-                             ui->graphBox_4->removeItem(j);
-                             break;
-                         }
-                         else if(j==ui->CDplot->graphCount()-1 && ui->graphBox->count()>ui->CDplot->graphCount())
-                         {
-                             ui->graphBox->removeItem(j+1);
-                             ui->graphBox_2->removeItem(j+1);
-                             ui->graphBox_3->removeItem(j+1);
-                             ui->graphBox_4->removeItem(j+1);
-                         }
-                     }
-                     if(activeGraph<highlightGraph-1 && highlightGraph!=-1)
-                         ui->CDplot->removeGraph(highlightGraph-2);
-                     else if(highlightGraph!=-1)
-                         ui->CDplot->removeGraph(highlightGraph-1);
-                     highlightGraph=-1;
-                     ui->CDplot->replot();
-                     updateTable(0);
-                     extern std::vector< std::vector< std::string> > resultStrVec;
-                     extern std::vector< std::vector< std::string> > rV2;
-                     for(unsigned int i=0; i<resultStrVec.size();i++)
-                         for(int j=0; j<ui->CDplot->graphCount(); j++)
-                         {
-                             if(ui->CDplot->graph(j)->name()==mconvert(resultStrVec[i][1]))
-                                 break;
-                             else if(j==ui->CDplot->graphCount()-1)
-                             {
-                                 resultStrVec[i].erase(resultStrVec[i].begin() + i);
-                                 rV2[i].erase(rV2[i].begin() + i);
-                             }
-                         }
-                     //Disables functions if no data is present
-                     if(ui->CDplot->graphCount()==0)
-                     {
-                         disconnect(ui->fitButton,SIGNAL(clicked()),this,SLOT(fitData()));
-                         disconnect(ui->fitButton_2,SIGNAL(clicked()),this,SLOT(fitData()));
-                         disconnect(ui->fitButton_3,SIGNAL(clicked()),this,SLOT(fitData()));
-                         disconnect(ui->fitButton_4,SIGNAL(clicked()),this,SLOT(fitData()));
-                         disconnect(ui->actionFit,SIGNAL(triggered()),this,SLOT(fitData()));
-                         disconnect(ui->actionSave, SIGNAL(triggered()), this, SLOT(saveResults()));
-                         disconnect(ui->actionExport_data,SIGNAL(triggered()),this,SLOT(exportResults()));
-                         disconnect(ui->actionDelete_graph,SIGNAL(triggered()),this,SLOT(removeSelectedGraph()));
-                         disconnect(ui->actionDelete_all_graphs,SIGNAL(triggered()),this,SLOT(removeAllGraphs()));
-                         disconnect(ui->actionDelete_fitted_graphs,SIGNAL(triggered()),this,SLOT(removeFittedGraphs()));
-                         disconnect(ui->actionSave_Project, SIGNAL(triggered()), this, SLOT(saveProject()));
-                         disconnect(ui->actionLoad_style_preset_2, SIGNAL(triggered()), this, SLOT(loadStyle()));
-                         disconnect(ui->actionSave_style_preset, SIGNAL(triggered()), this, SLOT(saveStyle()));
-                         ui->actionSave_Project->setDisabled(true);
-                         ui->actionLoad_style_preset_2->setDisabled(true);
-                         ui->actionSave_style_preset->setDisabled(true);
-                         ui->actionDelete_graph->setDisabled(true);
-                         ui->actionDelete_all_graphs->setDisabled(true);
-                         ui->actionDelete_fitted_graphs->setDisabled(true);
-                         disconnect(ui->actionColor,SIGNAL(triggered()),this,SLOT(colorGraph()));
-                         disconnect(ui->actionChange_style,SIGNAL(triggered()),this,SLOT(changeOrnament()));
-                         disconnect(ui->actionChange_pen_width,SIGNAL(triggered()),this,SLOT(changeWidth()));
-                         disconnect(ui->actionAutofit, SIGNAL(triggered()), this, SLOT(Autofit()));
-                         disconnect(ui->actionAutofit_All, SIGNAL(triggered()), this, SLOT(AutofitAll()));
-                         ui->fitButton->setDisabled(true);
-                         ui->fitButton_2->setDisabled(true);
-                         ui->fitButton_3->setDisabled(true);
-                         ui->fitButton_4->setDisabled(true);
-                         ui->actionSave->setDisabled(true);
-                         ui->actionColor->setDisabled(true);
-                         ui->actionExport_data->setDisabled(true);
-                         ui->actionChange_style->setDisabled(true);
-                         ui->actionChange_pen_width->setDisabled(true);
-                         disconnect(ui->actionF_test, SIGNAL(triggered()), this, SLOT(fTest()));
-                     }
-
-                     break;
+                    ui->graphBox->removeItem(j);
+                    ui->graphBox_2->removeItem(j);
+                    ui->graphBox_3->removeItem(j);
+                    ui->graphBox_4->removeItem(j);
+                    ui->graphBoxDiff->removeItem(j);
+                    break;
                 }
-           case QMessageBox::Cancel:
-               break;
-           default:
-               break;
-         }
+                else if(j==ui->CDplot->graphCount()-1 && ui->graphBox->count()>ui->CDplot->graphCount())
+                {
+                    ui->graphBox->removeItem(j+1);
+                    ui->graphBox_2->removeItem(j+1);
+                    ui->graphBox_3->removeItem(j+1);
+                    ui->graphBox_4->removeItem(j+1);
+                    ui->graphBoxDiff->removeItem(j+1);
+                }
+            }
+            if(activeGraph<highlightGraph-1 && highlightGraph!=-1)
+                ui->CDplot->removeGraph(highlightGraph-2);
+            else if(highlightGraph!=-1)
+                ui->CDplot->removeGraph(highlightGraph-1);
+            highlightGraph=-1;
+            ui->CDplot->replot();
+            updateTable(0);
+            extern std::vector< std::vector< std::string> > resultStrVec;
+            extern std::vector< std::vector< std::string> > rV2;
+            for(unsigned int i=0; i<resultStrVec.size();i++)
+                for(int j=0; j<ui->CDplot->graphCount(); j++)
+                {
+                    if(ui->CDplot->graph(j)->name()==mconvert(resultStrVec[i][1]))
+                        break;
+                    else if(j==ui->CDplot->graphCount()-1)
+                    {
+                        resultStrVec[i].erase(resultStrVec[i].begin() + i);
+                        rV2[i].erase(rV2[i].begin() + i);
+                    }
+                }
+            //Disables functions if no data is present
+            if(ui->CDplot->graphCount()==0)
+            {
+                ui->fitDiff->setEnabled(false);
+                ui->autofitAllDiff->setEnabled(false);
+                ui->autoFitDiff->setEnabled(false);
+                disconnect(ui->fitButton,SIGNAL(clicked()),this,SLOT(fitData()));
+                disconnect(ui->fitButton_2,SIGNAL(clicked()),this,SLOT(fitData()));
+                disconnect(ui->fitButton_3,SIGNAL(clicked()),this,SLOT(fitData()));
+                disconnect(ui->fitButton_4,SIGNAL(clicked()),this,SLOT(fitData()));
+                disconnect(ui->actionFit,SIGNAL(triggered()),this,SLOT(fitData()));
+                disconnect(ui->actionSave, SIGNAL(triggered()), this, SLOT(saveResults()));
+                disconnect(ui->actionExport_data,SIGNAL(triggered()),this,SLOT(exportResults()));
+                disconnect(ui->actionDelete_graph,SIGNAL(triggered()),this,SLOT(removeSelectedGraph()));
+                disconnect(ui->actionDelete_all_graphs,SIGNAL(triggered()),this,SLOT(removeAllGraphs()));
+                disconnect(ui->actionDelete_fitted_graphs,SIGNAL(triggered()),this,SLOT(removeFittedGraphs()));
+                disconnect(ui->actionSave_Project, SIGNAL(triggered()), this, SLOT(saveProject()));
+                disconnect(ui->actionLoad_style_preset_2, SIGNAL(triggered()), this, SLOT(loadStyle()));
+                disconnect(ui->actionSave_style_preset, SIGNAL(triggered()), this, SLOT(saveStyle()));
+                ui->actionSave_Project->setDisabled(true);
+                ui->actionLoad_style_preset_2->setDisabled(true);
+                ui->actionSave_style_preset->setDisabled(true);
+                ui->actionDelete_graph->setDisabled(true);
+                ui->actionDelete_all_graphs->setDisabled(true);
+                ui->actionDelete_fitted_graphs->setDisabled(true);
+                disconnect(ui->actionColor,SIGNAL(triggered()),this,SLOT(colorGraph()));
+                disconnect(ui->actionChange_style,SIGNAL(triggered()),this,SLOT(changeOrnament()));
+                disconnect(ui->actionChange_pen_width,SIGNAL(triggered()),this,SLOT(changeWidth()));
+                disconnect(ui->actionAutofit, SIGNAL(triggered()), this, SLOT(Autofit()));
+                disconnect(ui->actionAutofit_All, SIGNAL(triggered()), this, SLOT(AutofitAll()));
+                ui->fitButton->setDisabled(true);
+                ui->fitButton_2->setDisabled(true);
+                ui->fitButton_3->setDisabled(true);
+                ui->fitButton_4->setDisabled(true);
+                ui->actionSave->setDisabled(true);
+                ui->actionColor->setDisabled(true);
+                ui->actionExport_data->setDisabled(true);
+                ui->actionChange_style->setDisabled(true);
+                ui->actionChange_pen_width->setDisabled(true);
+                disconnect(ui->actionF_test, SIGNAL(triggered()), this, SLOT(fTest()));
+            }
+
+            break;
+        }
+        case QMessageBox::Cancel:
+            break;
+        default:
+            break;
+        }
         qApp->setQuitOnLastWindowClosed(true);
     }
 }
@@ -2864,81 +3223,86 @@ void CDpal::removeFittedGraphs()
     qApp->setQuitOnLastWindowClosed(false);
     int ret = msgBox.exec();
     switch (ret) {
-       case QMessageBox::Ok:
-            {
-                 for(int i=0; i<ui->CDplot->graphCount();i++)
-                 {
-                     QString str= ui->CDplot->graph(i)->name();
-                     if(str.length()>4)
-                     for(int j=0; j<str.length()-4; j++)
-                     {
-                         if(str[j]=='(' && str[j+1]=='f' && str[j+2]=='i' && str[j+3]=='t' && str[j+4]==':')
-                         {
-                             ui->CDplot->removeGraph(i);
-                             ui->graphBox->removeItem(i);
-                             ui->graphBox_2->removeItem(i);
-                             ui->graphBox_3->removeItem(i);
-                             ui->graphBox_4->removeItem(i);
-                             i--;
-                             break;
-                         }
-                     }
-                 }
-                 ui->CDplot->replot();
-                 updateTable(0);
-                 extern std::vector< std::vector< std::string> > resultStrVec;
-                 resultStrVec.clear();
-                 extern std::vector< std::vector< std::string> > rV2;
-                 rV2.clear();
-                 clearResults();
-                 removeHighlight();
-//Disables functions when no data is present
-                 if(ui->CDplot->graphCount()==0)
-                 {
-                     disconnect(ui->fitButton,SIGNAL(clicked()),this,SLOT(fitData()));
-                     disconnect(ui->fitButton_2,SIGNAL(clicked()),this,SLOT(fitData()));
-                     disconnect(ui->fitButton_3,SIGNAL(clicked()),this,SLOT(fitData()));
-                     disconnect(ui->fitButton_4,SIGNAL(clicked()),this,SLOT(fitData()));
-                     disconnect(ui->actionFit,SIGNAL(triggered()),this,SLOT(fitData()));
-                     disconnect(ui->actionSave,SIGNAL(triggered()),this,SLOT(saveData()));
-                     disconnect(ui->actionExport_data,SIGNAL(triggered()),this,SLOT(exportResults()));
-                     disconnect(ui->actionDelete_graph,SIGNAL(triggered()),this,SLOT(removeSelectedGraph()));
-                     disconnect(ui->actionDelete_all_graphs,SIGNAL(triggered()),this,SLOT(removeAllGraphs()));
-                     disconnect(ui->actionDelete_fitted_graphs,SIGNAL(triggered()),this,SLOT(removeFittedGraphs()));
-                     disconnect(ui->actionSave_Project, SIGNAL(triggered()), this, SLOT(saveProject()));
-                     disconnect(ui->actionLoad_style_preset_2, SIGNAL(triggered()), this, SLOT(loadStyle()));
-                     disconnect(ui->actionSave_style_preset, SIGNAL(triggered()), this, SLOT(saveStyle()));
-                     ui->actionSave_Project->setDisabled(true);
-                     ui->actionLoad_style_preset_2->setDisabled(true);
-                     ui->actionSave_style_preset->setDisabled(true);
-                     ui->actionDelete_graph->setDisabled(true);
-                     ui->actionDelete_all_graphs->setDisabled(true);
-                     ui->actionDelete_fitted_graphs->setDisabled(true);
-                     disconnect(ui->actionColor,SIGNAL(triggered()),this,SLOT(colorGraph()));
-                     disconnect(ui->actionChange_style,SIGNAL(triggered()),this,SLOT(changeOrnament()));
-                     disconnect(ui->actionChange_pen_width,SIGNAL(triggered()),this,SLOT(changeWidth()));
-                     disconnect(ui->actionAutofit, SIGNAL(triggered()), this, SLOT(Autofit()));
-                     disconnect(ui->actionAutofit_All, SIGNAL(triggered()), this, SLOT(AutofitAll()));
-                     ui->actionColor->setDisabled(true);
-                     ui->fitButton->setDisabled(true);
-                     ui->fitButton_2->setDisabled(true);
-                     ui->fitButton_3->setDisabled(true);
-                     ui->fitButton_4->setDisabled(true);
-                     ui->actionSave->setDisabled(true);
-                     ui->actionExport_data->setDisabled(true);
-                     ui->actionChange_style->setDisabled(true);
-                     ui->actionChange_pen_width->setDisabled(true);
-                     ui->graphBox->clear();
-                     ui->graphBox_2->clear();
-                     ui->graphBox_3->clear();
-                     ui->graphBox_4->clear();
-                 }
-                 break;
-            }
-       case QMessageBox::Cancel:
-           break;
-       default:
-           break;
+    case QMessageBox::Ok:
+    {
+        for(int i=0; i<ui->CDplot->graphCount();i++)
+        {
+            QString str= ui->CDplot->graph(i)->name();
+            if(str.length()>4)
+                for(int j=0; j<str.length()-4; j++)
+                {
+                    if(str[j]=='(' && str[j+1]=='f' && str[j+2]=='i' && str[j+3]=='t' && str[j+4]==':')
+                    {
+                        ui->CDplot->removeGraph(i);
+                        ui->graphBox->removeItem(i);
+                        ui->graphBox_2->removeItem(i);
+                        ui->graphBox_3->removeItem(i);
+                        ui->graphBox_4->removeItem(i);
+                        ui->graphBoxDiff->removeItem(i);
+                        i--;
+                        break;
+                    }
+                }
+        }
+        ui->CDplot->replot();
+        updateTable(0);
+        extern std::vector< std::vector< std::string> > resultStrVec;
+        resultStrVec.clear();
+        extern std::vector< std::vector< std::string> > rV2;
+        rV2.clear();
+        clearResults();
+        removeHighlight();
+        //Disables functions when no data is present
+        if(ui->CDplot->graphCount()==0)
+        {
+            disconnect(ui->fitButton,SIGNAL(clicked()),this,SLOT(fitData()));
+            disconnect(ui->fitButton_2,SIGNAL(clicked()),this,SLOT(fitData()));
+            disconnect(ui->fitButton_3,SIGNAL(clicked()),this,SLOT(fitData()));
+            disconnect(ui->fitButton_4,SIGNAL(clicked()),this,SLOT(fitData()));
+            disconnect(ui->actionFit,SIGNAL(triggered()),this,SLOT(fitData()));
+            disconnect(ui->actionSave,SIGNAL(triggered()),this,SLOT(saveData()));
+            disconnect(ui->actionExport_data,SIGNAL(triggered()),this,SLOT(exportResults()));
+            disconnect(ui->actionDelete_graph,SIGNAL(triggered()),this,SLOT(removeSelectedGraph()));
+            disconnect(ui->actionDelete_all_graphs,SIGNAL(triggered()),this,SLOT(removeAllGraphs()));
+            disconnect(ui->actionDelete_fitted_graphs,SIGNAL(triggered()),this,SLOT(removeFittedGraphs()));
+            disconnect(ui->actionSave_Project, SIGNAL(triggered()), this, SLOT(saveProject()));
+            disconnect(ui->actionLoad_style_preset_2, SIGNAL(triggered()), this, SLOT(loadStyle()));
+            disconnect(ui->actionSave_style_preset, SIGNAL(triggered()), this, SLOT(saveStyle()));
+            ui->actionSave_Project->setDisabled(true);
+            ui->actionLoad_style_preset_2->setDisabled(true);
+            ui->actionSave_style_preset->setDisabled(true);
+            ui->actionDelete_graph->setDisabled(true);
+            ui->actionDelete_all_graphs->setDisabled(true);
+            ui->actionDelete_fitted_graphs->setDisabled(true);
+            disconnect(ui->actionColor,SIGNAL(triggered()),this,SLOT(colorGraph()));
+            disconnect(ui->actionChange_style,SIGNAL(triggered()),this,SLOT(changeOrnament()));
+            disconnect(ui->actionChange_pen_width,SIGNAL(triggered()),this,SLOT(changeWidth()));
+            disconnect(ui->actionAutofit, SIGNAL(triggered()), this, SLOT(Autofit()));
+            disconnect(ui->actionAutofit_All, SIGNAL(triggered()), this, SLOT(AutofitAll()));
+            ui->actionColor->setDisabled(true);
+            ui->fitButton->setDisabled(true);
+            ui->fitButton_2->setDisabled(true);
+            ui->fitButton_3->setDisabled(true);
+            ui->fitButton_4->setDisabled(true);
+            ui->actionSave->setDisabled(true);
+            ui->actionExport_data->setDisabled(true);
+            ui->actionChange_style->setDisabled(true);
+            ui->actionChange_pen_width->setDisabled(true);
+            ui->graphBox->clear();
+            ui->graphBox_2->clear();
+            ui->graphBox_3->clear();
+            ui->graphBox_4->clear();
+            ui->graphBoxDiff->clear();
+            ui->fitDiff->setEnabled(false);
+            ui->autofitAllDiff->setEnabled(false);
+            ui->autoFitDiff->setEnabled(false);
+        }
+        break;
+    }
+    case QMessageBox::Cancel:
+        break;
+    default:
+        break;
     }
     qApp->setQuitOnLastWindowClosed(true);
 }
@@ -2952,110 +3316,114 @@ void CDpal::removeAllGraphs()
     qApp->setQuitOnLastWindowClosed(false);
     int ret = msgBox.exec();
     switch (ret) {
-       case QMessageBox::Ok:
-            {
-                 ui->CDplot->clearGraphs();
-                 ui->CDplot->replot();
-                 updateTable(0);
-                 clearResults();
-                 extern std::vector< std::vector< std::string> > rV2;
-                 extern std::vector< std::vector< std::string> > resultStrVec;
-                 resultStrVec.clear();
-                 rV2.clear();
-//Disables functions when no data is present
-                 disconnect(ui->fitButton,SIGNAL(clicked()),this,SLOT(fitData()));
-                 disconnect(ui->fitButton_2,SIGNAL(clicked()),this,SLOT(fitData()));
-                 disconnect(ui->fitButton_3,SIGNAL(clicked()),this,SLOT(fitData()));
-                 disconnect(ui->fitButton_4,SIGNAL(clicked()),this,SLOT(fitData()));
-                 disconnect(ui->actionFit,SIGNAL(triggered()),this,SLOT(fitData()));
-                 disconnect(ui->actionSave, SIGNAL(triggered()), this, SLOT(saveResults()));
-                 disconnect(ui->actionSave_Project, SIGNAL(triggered()), this, SLOT(saveProject()));
-                 disconnect(ui->actionSave_style_preset, SIGNAL(triggered()), this, SLOT(saveStyle()));
-                 disconnect(ui->actionLoad_style_preset_2, SIGNAL(triggered()), this, SLOT(loadStyle()));
-                 ui->actionSave_Project->setDisabled(true);
-                 ui->actionSave_style_preset->setDisabled(true);
-                 ui->actionLoad_style_preset_2->setDisabled(true);
-                 disconnect(ui->actionExport_data,SIGNAL(triggered()),this,SLOT(exportResults()));
-                 disconnect(ui->actionDelete_graph,SIGNAL(triggered()),this,SLOT(removeSelectedGraph()));
-                 disconnect(ui->actionDelete_all_graphs,SIGNAL(triggered()),this,SLOT(removeAllGraphs()));
-                 disconnect(ui->actionDelete_fitted_graphs,SIGNAL(triggered()),this,SLOT(removeFittedGraphs()));
-                 ui->actionDelete_graph->setDisabled(true);
-                 ui->actionDelete_all_graphs->setDisabled(true);
-                 ui->actionDelete_fitted_graphs->setDisabled(true);
-                 disconnect(ui->actionColor,SIGNAL(triggered()),this,SLOT(colorGraph()));
-                 disconnect(ui->actionChange_style,SIGNAL(triggered()),this,SLOT(changeOrnament()));
-                 disconnect(ui->actionChange_pen_width,SIGNAL(triggered()),this,SLOT(changeWidth()));
-                 disconnect(ui->actionAutofit, SIGNAL(triggered()), this, SLOT(Autofit()));
-                 disconnect(ui->actionAutofit_All, SIGNAL(triggered()), this, SLOT(AutofitAll()));
-                 ui->actionColor->setDisabled(true);
-                 ui->fitButton->setDisabled(true);
-                 ui->fitButton_2->setDisabled(true);
-                 ui->fitButton_3->setDisabled(true);
-                 ui->fitButton_4->setDisabled(true);
-                 ui->actionSave->setDisabled(true);
-                 ui->actionExport_data->setDisabled(true);
-                 ui->actionChange_style->setDisabled(true);
-                 ui->actionChange_pen_width->setDisabled(true);
-                 ui->graphBox->clear();
-                 ui->graphBox_2->clear();
-                 ui->graphBox_3->clear();
-                 ui->graphBox_4->clear();
-                 disconnect(ui->actionF_test, SIGNAL(triggered()), this, SLOT(fTest()));
-//
-                 break;
-            }
-       case QMessageBox::Cancel:
-           break;
-       default:
-           break;
+    case QMessageBox::Ok:
+    {
+        ui->CDplot->clearGraphs();
+        ui->CDplot->replot();
+        updateTable(0);
+        clearResults();
+        extern std::vector< std::vector< std::string> > rV2;
+        extern std::vector< std::vector< std::string> > resultStrVec;
+        resultStrVec.clear();
+        rV2.clear();
+        //Disables functions when no data is present
+        disconnect(ui->fitButton,SIGNAL(clicked()),this,SLOT(fitData()));
+        disconnect(ui->fitButton_2,SIGNAL(clicked()),this,SLOT(fitData()));
+        disconnect(ui->fitButton_3,SIGNAL(clicked()),this,SLOT(fitData()));
+        disconnect(ui->fitButton_4,SIGNAL(clicked()),this,SLOT(fitData()));
+        disconnect(ui->actionFit,SIGNAL(triggered()),this,SLOT(fitData()));
+        disconnect(ui->actionSave, SIGNAL(triggered()), this, SLOT(saveResults()));
+        disconnect(ui->actionSave_Project, SIGNAL(triggered()), this, SLOT(saveProject()));
+        disconnect(ui->actionSave_style_preset, SIGNAL(triggered()), this, SLOT(saveStyle()));
+        disconnect(ui->actionLoad_style_preset_2, SIGNAL(triggered()), this, SLOT(loadStyle()));
+        ui->actionSave_Project->setDisabled(true);
+        ui->actionSave_style_preset->setDisabled(true);
+        ui->actionLoad_style_preset_2->setDisabled(true);
+        disconnect(ui->actionExport_data,SIGNAL(triggered()),this,SLOT(exportResults()));
+        disconnect(ui->actionDelete_graph,SIGNAL(triggered()),this,SLOT(removeSelectedGraph()));
+        disconnect(ui->actionDelete_all_graphs,SIGNAL(triggered()),this,SLOT(removeAllGraphs()));
+        disconnect(ui->actionDelete_fitted_graphs,SIGNAL(triggered()),this,SLOT(removeFittedGraphs()));
+        ui->actionDelete_graph->setDisabled(true);
+        ui->actionDelete_all_graphs->setDisabled(true);
+        ui->actionDelete_fitted_graphs->setDisabled(true);
+        disconnect(ui->actionColor,SIGNAL(triggered()),this,SLOT(colorGraph()));
+        disconnect(ui->actionChange_style,SIGNAL(triggered()),this,SLOT(changeOrnament()));
+        disconnect(ui->actionChange_pen_width,SIGNAL(triggered()),this,SLOT(changeWidth()));
+        disconnect(ui->actionAutofit, SIGNAL(triggered()), this, SLOT(Autofit()));
+        disconnect(ui->actionAutofit_All, SIGNAL(triggered()), this, SLOT(AutofitAll()));
+        ui->actionColor->setDisabled(true);
+        ui->fitButton->setDisabled(true);
+        ui->fitButton_2->setDisabled(true);
+        ui->fitButton_3->setDisabled(true);
+        ui->fitButton_4->setDisabled(true);
+        ui->actionSave->setDisabled(true);
+        ui->actionExport_data->setDisabled(true);
+        ui->actionChange_style->setDisabled(true);
+        ui->actionChange_pen_width->setDisabled(true);
+        ui->graphBox->clear();
+        ui->graphBox_2->clear();
+        ui->graphBox_3->clear();
+        ui->graphBox_4->clear();
+        ui->graphBoxDiff->clear();
+        ui->fitDiff->setEnabled(false);
+        ui->autofitAllDiff->setEnabled(false);
+        ui->autoFitDiff->setEnabled(false);
+        disconnect(ui->actionF_test, SIGNAL(triggered()), this, SLOT(fTest()));
+        //
+        break;
+    }
+    case QMessageBox::Cancel:
+        break;
+    default:
+        break;
     }
     qApp->setQuitOnLastWindowClosed(true);
 }
 
 void CDpal::contextMenuRequest(QPoint pos)
 {
-  QMenu *menu = new QMenu(this);
-  menu->setAttribute(Qt::WA_DeleteOnClose);
+    QMenu *menu = new QMenu(this);
+    menu->setAttribute(Qt::WA_DeleteOnClose);
 
-  if (ui->CDplot->legend->selectTest(pos, false) >= 0) // context menu on legend requested
-  {
-    menu->addAction("Move to top left", this, SLOT(moveLegend()))->setData((int)(Qt::AlignTop|Qt::AlignLeft));
-    menu->addAction("Move to top center", this, SLOT(moveLegend()))->setData((int)(Qt::AlignTop|Qt::AlignHCenter));
-    menu->addAction("Move to top right", this, SLOT(moveLegend()))->setData((int)(Qt::AlignTop|Qt::AlignRight));
-    menu->addAction("Move to bottom right", this, SLOT(moveLegend()))->setData((int)(Qt::AlignBottom|Qt::AlignRight));
-    menu->addAction("Move to bottom left", this, SLOT(moveLegend()))->setData((int)(Qt::AlignBottom|Qt::AlignLeft));
-  } else  // general context menu on graphs requested
-  {
-    if (ui->CDplot->selectedPlottables().size() > 0)
-        menu->addAction("Remove selected graph", this, SLOT(removeSelectedGraph()));
-    if (ui->CDplot->graphCount() > 1)
-        menu->addAction("Merge graphs into one dataset", this, SLOT(mergeGraphs()));
-    if (ui->CDplot->graphCount() > 0)
-      menu->addAction("Remove all graphs", this, SLOT(removeAllGraphs()));
-    if (ui->CDplot->graphCount() > 0)
-        menu->addAction("Remove all fitted graphs", this, SLOT(removeFittedGraphs()));
-  }
+    if (ui->CDplot->legend->selectTest(pos, false) >= 0) // context menu on legend requested
+    {
+        menu->addAction("Move to top left", this, SLOT(moveLegend()))->setData((int)(Qt::AlignTop|Qt::AlignLeft));
+        menu->addAction("Move to top center", this, SLOT(moveLegend()))->setData((int)(Qt::AlignTop|Qt::AlignHCenter));
+        menu->addAction("Move to top right", this, SLOT(moveLegend()))->setData((int)(Qt::AlignTop|Qt::AlignRight));
+        menu->addAction("Move to bottom right", this, SLOT(moveLegend()))->setData((int)(Qt::AlignBottom|Qt::AlignRight));
+        menu->addAction("Move to bottom left", this, SLOT(moveLegend()))->setData((int)(Qt::AlignBottom|Qt::AlignLeft));
+    } else  // general context menu on graphs requested
+    {
+        if (ui->CDplot->selectedPlottables().size() > 0)
+            menu->addAction("Remove selected graph", this, SLOT(removeSelectedGraph()));
+        if (ui->CDplot->graphCount() > 1)
+            menu->addAction("Merge graphs into one dataset", this, SLOT(mergeGraphs()));
+        if (ui->CDplot->graphCount() > 0)
+            menu->addAction("Remove all graphs", this, SLOT(removeAllGraphs()));
+        if (ui->CDplot->graphCount() > 0)
+            menu->addAction("Remove all fitted graphs", this, SLOT(removeFittedGraphs()));
+    }
 
-  menu->popup(ui->CDplot->mapToGlobal(pos));
+    menu->popup(ui->CDplot->mapToGlobal(pos));
 }
 
 void CDpal::moveLegend()
 {
-  if (QAction* contextAction = qobject_cast<QAction*>(sender())) // make sure this slot is really called by a context menu action, so it carries the data we need
-  {
-    bool ok;
-    int dataInt = contextAction->data().toInt(&ok);
-    if (ok)
+    if (QAction* contextAction = qobject_cast<QAction*>(sender())) // make sure this slot is really called by a context menu action, so it carries the data we need
     {
-      ui->CDplot->axisRect()->insetLayout()->setInsetAlignment(0, (Qt::Alignment)dataInt);
-      ui->CDplot->replot();
+        bool ok;
+        int dataInt = contextAction->data().toInt(&ok);
+        if (ok)
+        {
+            ui->CDplot->axisRect()->insetLayout()->setInsetAlignment(0, (Qt::Alignment)dataInt);
+            ui->CDplot->replot();
+        }
     }
-  }
 }
 
 void CDpal::graphClicked(QCPAbstractPlottable *plottable)
 {
-  ui->statusbar->showMessage(QString("Clicked on graph '%1'.").arg(plottable->name()), 1000);
+    ui->statusbar->showMessage(QString("Clicked on graph '%1'.").arg(plottable->name()), 1000);
 }
 
 QPen CDpal::changePen(QPen pen, int i)
@@ -3098,14 +3466,14 @@ void CDpal::highlight()
             QVector<double> x, y, yerr;
             for(short s=0; s < ui->table->rowCount(); s++)
             {
-               if(ui->table->item(s,0)->isSelected())
-               {
-                   x.push_back(j.value().key);
-                   y.push_back(j.value().value);
-                   if(ui->table->columnCount()==3)
-                      yerr.push_back(j.value().valueErrorPlus);
-               }
-               j++;
+                if(ui->table->item(s,0)->isSelected())
+                {
+                    x.push_back(j.value().key);
+                    y.push_back(j.value().value);
+                    if(ui->table->columnCount()==3)
+                        yerr.push_back(j.value().valueErrorPlus);
+                }
+                j++;
             }
             ui->CDplot->addGraph();
             QPen pen;
@@ -3117,14 +3485,14 @@ void CDpal::highlight()
                 ui->CDplot->graph()->setData(x, y);
             else if(ui->table->columnCount()==3)
                 ui->CDplot->graph()->setDataValueError(x, y, yerr);
-                QString str = "Selected: ";
-                str+=ui->CDplot->graph(activeGraph)->name();
+            QString str = "Selected: ";
+            str+=ui->CDplot->graph(activeGraph)->name();
             ui->CDplot->graph()->setName(str);
             ui->CDplot->graph()->setLineStyle(QCPGraph::lsNone);
             if(ui->table->columnCount()==3)
             {
-              ui->CDplot->graph()->setErrorType(QCPGraph::etValue);
-              ui->CDplot->graph()->setErrorPen(pen);
+                ui->CDplot->graph()->setErrorType(QCPGraph::etValue);
+                ui->CDplot->graph()->setErrorPen(pen);
             }
             QPainterPath customScatterPath;
             for (int i=0; i<6; ++i)
@@ -3298,6 +3666,7 @@ void CDpal::AutofitAll()
             ui->graphBox_2->setCurrentIndex(i);
             ui->graphBox_3->setCurrentIndex(i);
             ui->graphBox_4->setCurrentIndex(i);
+            ui->graphBoxDiff->setCurrentIndex(i);
             QString str = ui->graphBox->currentText();
             if(str.length()>4)
             {
@@ -3305,8 +3674,8 @@ void CDpal::AutofitAll()
                 {
                     if(str[i]=='(' && str[i+1]=='f' && str[i+2]=='i' && str[i+3]=='t' && str[i+4]==':')
                     {
-                       cont=true;
-                       break;
+                        cont=true;
+                        break;
                     }
                 }
                 if(cont==true)
@@ -3325,6 +3694,7 @@ void CDpal::AutofitAll()
             ui->graphBox_2->setCurrentIndex(i);
             ui->graphBox_3->setCurrentIndex(i);
             ui->graphBox_4->setCurrentIndex(i);
+            ui->graphBoxDiff->setCurrentIndex(i);
             QString str = ui->graphBox_2->currentText();
             if(str.length()>4)
             {
@@ -3332,8 +3702,8 @@ void CDpal::AutofitAll()
                 {
                     if(str[i]=='(' && str[i+1]=='f' && str[i+2]=='i' && str[i+3]=='t' && str[i+4]==':')
                     {
-                       cont=true;
-                       break;
+                        cont=true;
+                        break;
                     }
                 }
                 if(cont==true)
@@ -3352,8 +3722,8 @@ void CDpal::Autofit()
     {
         QMessageBox::StandardButton dialog;
         dialog = QMessageBox::warning(this, "CDpal",
-                     "Autofit can only be performed on the \"N→D\" and the \"N→I→D\" model.",
-                     QMessageBox::Ok);
+                                      "Autofit can only be performed on the \"N→D\" and the \"N→I→D\" model.",
+                                      QMessageBox::Ok);
         if(dialog==QMessageBox::Ok)
         {
             connect(ui->actionAutofit, SIGNAL(triggered()), this, SLOT(Autofit()));
@@ -3389,8 +3759,8 @@ void CDpal::Autofit()
                 {
                     QMessageBox::StandardButton dialog;
                     dialog = QMessageBox::warning(this, "CDpal",
-                                 "Cannot fit curve fitted data.\nPlease select an experimental dataset.",
-                                 QMessageBox::Ok);
+                                                  "Cannot fit curve fitted data.\nPlease select an experimental dataset.",
+                                                  QMessageBox::Ok);
                     if(dialog==QMessageBox::Ok)
                     {
                         connect(ui->actionAutofit, SIGNAL(triggered()), this, SLOT(Autofit()));
@@ -3414,8 +3784,8 @@ void CDpal::Autofit()
         {
             QMessageBox::StandardButton dialog;
             dialog = QMessageBox::warning(this, "CDpal",
-                         "Too few data points for automatic fitting.",
-                         QMessageBox::Ok);
+                                          "Too few data points for automatic fitting.",
+                                          QMessageBox::Ok);
             if(dialog==QMessageBox::Ok)
             {
                 connect(ui->actionAutofit, SIGNAL(triggered()), this, SLOT(Autofit()));
@@ -3459,8 +3829,8 @@ void CDpal::Autofit()
         {
             QMessageBox::StandardButton dialog3;
             dialog3 = QMessageBox::warning(this, "CDpal",
-                         "Autofit failed.",
-                         QMessageBox::Ok);
+                                           "Autofit failed.",
+                                           QMessageBox::Ok);
             if(QMessageBox::Ok==dialog3)
                 matrixError="";
             connect(ui->actionAutofit, SIGNAL(triggered()), this, SLOT(Autofit()));
@@ -3471,8 +3841,8 @@ void CDpal::Autofit()
         {
             QMessageBox::StandardButton dialog3;
             dialog3 = QMessageBox::warning(this, "CDpal",
-                         "Autofit failed.",
-                         QMessageBox::Ok);
+                                           "Autofit failed.",
+                                           QMessageBox::Ok);
             if(QMessageBox::Ok==dialog3)
                 matrixError="";
             connect(ui->actionAutofit, SIGNAL(triggered()), this, SLOT(Autofit()));
@@ -3526,8 +3896,8 @@ void CDpal::Autofit()
                 {
                     QMessageBox::StandardButton dialog;
                     dialog = QMessageBox::warning(this, "CDpal",
-                                 "Cannot fit curve fitted data.\nPlease select an experimental dataset.",
-                                 QMessageBox::Ok);
+                                                  "Cannot fit curve fitted data.\nPlease select an experimental dataset.",
+                                                  QMessageBox::Ok);
                     if(dialog==QMessageBox::Ok)
                     {
                         connect(ui->actionAutofit, SIGNAL(triggered()), this, SLOT(Autofit()));
@@ -3551,8 +3921,8 @@ void CDpal::Autofit()
         {
             QMessageBox::StandardButton dialog;
             dialog = QMessageBox::warning(this, "CDpal",
-                         "Too few data points for automatic fitting.",
-                         QMessageBox::Ok);
+                                          "Too few data points for automatic fitting.",
+                                          QMessageBox::Ok);
             if(dialog==QMessageBox::Ok)
             {
                 connect(ui->actionAutofit, SIGNAL(triggered()), this, SLOT(Autofit()));
@@ -3624,8 +3994,8 @@ void CDpal::Autofit()
         {
             QMessageBox::StandardButton dialog3;
             dialog3 = QMessageBox::warning(this, "CDpal",
-                         "Autofit failed.",
-                         QMessageBox::Ok);
+                                           "Autofit failed.",
+                                           QMessageBox::Ok);
             if(QMessageBox::Ok==dialog3)
                 matrixError="";
             connect(ui->actionAutofit, SIGNAL(triggered()), this, SLOT(Autofit()));
@@ -3636,8 +4006,8 @@ void CDpal::Autofit()
         {
             QMessageBox::StandardButton dialog3;
             dialog3 = QMessageBox::warning(this, "CDpal",
-                         "Autofit failed.",
-                         QMessageBox::Ok);
+                                           "Autofit failed.",
+                                           QMessageBox::Ok);
             if(QMessageBox::Ok==dialog3)
                 matrixError="";
             connect(ui->actionAutofit, SIGNAL(triggered()), this, SLOT(Autofit()));
@@ -3648,8 +4018,8 @@ void CDpal::Autofit()
         {
             QMessageBox::StandardButton dialog3;
             dialog3 = QMessageBox::warning(this, "CDpal",
-                         "Autofit failed.",
-                         QMessageBox::Ok);
+                                           "Autofit failed.",
+                                           QMessageBox::Ok);
             if(QMessageBox::Ok==dialog3)
                 matrixError="";
             connect(ui->actionAutofit, SIGNAL(triggered()), this, SLOT(Autofit()));
@@ -3803,7 +4173,7 @@ void CDpal::Autofit2Tm(std::vector< double > xV, std::vector< double > yV)
 
 void CDpal::AutofitDeltaH()
 {
-        ui->deltaEdit->setText("350");
+    ui->deltaEdit->setText("350");
 }
 void CDpal::Autofit2DeltaH()
 {
@@ -3862,7 +4232,7 @@ void CDpal::Autofit2Region(int state, int len, std::vector< double > x, std::vec
     ErrorSim myerr(x, y, errVal, fitData.parVec, fixed, flin);
     myerr.simerror(); //jackknife
     Output myoutput(x, y, errVal, fitData.parVec, flin, myerr.jackerr,
-                 fitData.variance, fitData.chi, dof, cfile, cfile);
+                    fitData.variance, fitData.chi, dof, cfile, cfile);
     myoutput.print(true);
     myoutput.plot(false, true); //smooth plotting (many data points)
     extern std::string resultStr;
@@ -3918,7 +4288,7 @@ void CDpal::AutofitRegion(int state, int len, std::vector< double > x, std::vect
     ErrorSim myerr(x, y, errVal, fitData.parVec, fixed, flin);
     myerr.simerror(); //jackknife
     Output myoutput(x, y, errVal, fitData.parVec, flin, myerr.jackerr,
-                 fitData.variance, fitData.chi, dof, cfile, cfile);
+                    fitData.variance, fitData.chi, dof, cfile, cfile);
     myoutput.print(true);
     myoutput.plot(false, true); //smooth plotting (many data points)
     extern std::string resultStr;
@@ -3962,8 +4332,8 @@ void CDpal::readData(QStringList list, int normalize, QString item) //ChiraScan
         {
             QMessageBox::StandardButton dialog2;
             dialog2 = QMessageBox::warning(this, "CDpal",
-                         "Do you want to normalize the imported data?",
-                         QMessageBox::Yes | QMessageBox::No);
+                                           "Do you want to normalize the imported data?",
+                                           QMessageBox::Yes | QMessageBox::No);
             if( dialog2 == QMessageBox::Yes)
             {
                 normalize=1;
@@ -4003,9 +4373,9 @@ void CDpal::readData(QStringList list, int normalize, QString item) //ChiraScan
                 {
                     if(customName)
                     {
-                     extern QStringList graphNames;
-                     extern QString currentName;
-                     currentName = graphNames.at(i);
+                        extern QStringList graphNames;
+                        extern QString currentName;
+                        currentName = graphNames.at(i);
                     }
                     renderGraph(dataVec,0,0);
                 }
@@ -4018,6 +4388,9 @@ void CDpal::readData(QStringList list, int normalize, QString item) //ChiraScan
             ui->CDplot->replot();
             if(enable2==true && ui->CDplot->graphCount()>0)
             {
+                ui->fitDiff->setEnabled(true);
+                ui->autofitAllDiff->setEnabled(true);
+                ui->autoFitDiff->setEnabled(true);
                 disconnect(ui->fitButton,SIGNAL(clicked()),this,SLOT(fitData()));
                 disconnect(ui->fitButton_2,SIGNAL(clicked()),this,SLOT(fitData()));
                 disconnect(ui->fitButton_3,SIGNAL(clicked()),this,SLOT(fitData()));
@@ -4070,8 +4443,8 @@ void CDpal::closeEvent(QCloseEvent *event)
 {
     QMessageBox::StandardButton dialog;
     dialog = QMessageBox::warning(this, "CDpal",
-                 "Do you want to quit?\nAny unsaved changes will be lost.",
-                 QMessageBox::Ok | QMessageBox::Cancel);
+                                  "Do you want to quit?\nAny unsaved changes will be lost.",
+                                  QMessageBox::Ok | QMessageBox::Cancel);
     if( dialog == QMessageBox::Ok)
         QApplication::quit();
     else
@@ -4086,14 +4459,14 @@ void CDpal::omitData()
         QString str = ui->CDplot->graph(activeGraph)->name();
         bool ok=true;
         if(str.length()>4)
-        for(int j=0; j<str.length()-4; j++)
-        {
-            if(str[j]=='(' && str[j+1]=='f' && str[j+2]=='i' && str[j+3]=='t' && str[j+4]==':')
+            for(int j=0; j<str.length()-4; j++)
             {
-                QMessageBox::warning(this, "CDpal","Fitted data cannot be omitted. Aborting.", QMessageBox::Ok);
-                ok=false;
+                if(str[j]=='(' && str[j+1]=='f' && str[j+2]=='i' && str[j+3]=='t' && str[j+4]==':')
+                {
+                    QMessageBox::warning(this, "CDpal","Fitted data cannot be omitted. Aborting.", QMessageBox::Ok);
+                    ok=false;
+                }
             }
-        }
         if(ok)
         {
             const QCPDataMap *dataMap = ui->CDplot->graph(activeGraph)->data();
@@ -4101,23 +4474,23 @@ void CDpal::omitData()
             QVector<double> x, y, yerr, x1, y1, yerr1;
             while (j != dataMap->constEnd())
             {
-                 x.push_back(j.value().key);
-                 y.push_back(j.value().value);
-                 if(ui->table->columnCount()==3)
+                x.push_back(j.value().key);
+                y.push_back(j.value().value);
+                if(ui->table->columnCount()==3)
                     yerr.push_back(j.value().valueErrorPlus);
-                 j++;
+                j++;
             }
             for(short s=0; s < ui->table->rowCount(); s++)
             {
-               if(ui->table->item(s,0)->isSelected())
-               {}
-               else
-               {
-                   x1.push_back(x[s]);
-                   y1.push_back(y[s]);
-                   if(ui->table->columnCount()==3)
-                       yerr1.push_back(yerr[s]);
-               }
+                if(ui->table->item(s,0)->isSelected())
+                {}
+                else
+                {
+                    x1.push_back(x[s]);
+                    y1.push_back(y[s]);
+                    if(ui->table->columnCount()==3)
+                        yerr1.push_back(yerr[s]);
+                }
             }
             if(ui->table->columnCount()==2)
                 ui->CDplot->graph(activeGraph)->setData(x1, y1);
@@ -4168,127 +4541,128 @@ void CDpal::renderGraph(std::vector< std::vector<std::string> > dataVec, int mod
         faucetShape=0;
     for (int i=0; i<1; ++i)
     {
-      ui->CDplot->addGraph();
+        ui->CDplot->addGraph();
 
-      QVector<double> x1(dataVec.size()), y1(dataVec.size());
-      for (unsigned int i=0; i<dataVec.size(); ++i)
-      {
-        x1[i] = atof(dataVec[i][0].c_str());
-        y1[i] = atof(dataVec[i][1].c_str());
-      }
-      if(dataVec[0].size()>2)
-      {
-           QVector<double> y1err(dataVec.size());
-           for (unsigned int i=0; i<dataVec.size(); ++i)
-               y1err[i] = atof(dataVec[i][2].c_str());
-           ui->CDplot->graph()->setDataValueError(x1, y1, y1err);
-      }
-      else
-          ui->CDplot->graph()->setData(x1, y1);
-      ui->CDplot->graph()->rescaleAxes(true);
-      ui->CDplot->graph()->setPen(faucetPen);
-      QString grName;
-      if(mode==0)
-      {
-          extern bool customName;
-          if(customName)
-          {
-              extern QString currentName;
-              grName = currentName;
-          }
-          else
-          {
-              grName = "Graph ";
-              //int grNo = ui->CDplot->graphCount()-1;
-              int grNo = 0;
-              for(int i=0; i<ui->CDplot->graphCount();i++)
-              {
-                  QString tmp = "Graph ";
-                  tmp += QString::number(grNo);
-                  if(tmp==ui->CDplot->graph(i)->name())
-                  {
-                      i=-1;
-                      grNo++;
-                  }
-                  else if(ui->CDplot->graph(i)->name().length()>=tmp.length())
-                      for(int j=0; j<tmp.length(); j++)
-                      {
-                          if(tmp[j]!=ui->CDplot->graph(i)->name()[j])
-                              break;
-                          else if(j==tmp.length()-1)
-                          {
-                              i=-1;
-                              grNo++;
-                          }
-                      }
-              }
-              grName += QString::number(grNo);
-          }
-      }
-      else if(mode==1)
-      {
-          grName = ui->CDplot->graph(graphNo)->name();
-          int grNo=1;
-          for(int i=0; i<ui->CDplot->graphCount();i++)
-          {
-              QString tmp = grName;
-              tmp += "(fit:";
-              tmp += QString::number(grNo);
-              tmp += ")";
-              if(tmp==ui->CDplot->graph(i)->name())
-              {
-                  i=-1;
-                  grNo++;
-              }
-          }
-          grName+="(fit:";
-          grName+= QString::number(grNo);
-          grName+=")";
-      }
-      else
-      {
-          grName = ui->CDplot->graph(graphNo)->name();
-          int grNo=1;
-          for(int i=0; i<ui->CDplot->graphCount();i++)
-          {
-              QString tmp = grName;
-              tmp += "(res:";
-              tmp += QString::number(grNo);
-              tmp += ")";
-              if(tmp==ui->CDplot->graph(i)->name())
-              {
-                  i=-1;
-                  grNo++;
-              }
-          }
-          grName+="(res:";
-          grName+= QString::number(grNo);
-          grName+=")";
-      }
-      ui->CDplot->graph()->setName(grName);
-      ui->graphBox->addItem(grName);
-      ui->graphBox_2->addItem(grName);
-      ui->graphBox_3->addItem(grName);
-      ui->graphBox_4->addItem(grName);
+        QVector<double> x1(dataVec.size()), y1(dataVec.size());
+        for (unsigned int i=0; i<dataVec.size(); ++i)
+        {
+            x1[i] = atof(dataVec[i][0].c_str());
+            y1[i] = atof(dataVec[i][1].c_str());
+        }
+        if(dataVec[0].size()>2)
+        {
+            QVector<double> y1err(dataVec.size());
+            for (unsigned int i=0; i<dataVec.size(); ++i)
+                y1err[i] = atof(dataVec[i][2].c_str());
+            ui->CDplot->graph()->setDataValueError(x1, y1, y1err);
+        }
+        else
+            ui->CDplot->graph()->setData(x1, y1);
+        ui->CDplot->graph()->rescaleAxes(true);
+        ui->CDplot->graph()->setPen(faucetPen);
+        QString grName;
+        if(mode==0)
+        {
+            extern bool customName;
+            if(customName)
+            {
+                extern QString currentName;
+                grName = currentName;
+            }
+            else
+            {
+                grName = "Graph ";
+                //int grNo = ui->CDplot->graphCount()-1;
+                int grNo = 0;
+                for(int i=0; i<ui->CDplot->graphCount();i++)
+                {
+                    QString tmp = "Graph ";
+                    tmp += QString::number(grNo);
+                    if(tmp==ui->CDplot->graph(i)->name())
+                    {
+                        i=-1;
+                        grNo++;
+                    }
+                    else if(ui->CDplot->graph(i)->name().length()>=tmp.length())
+                        for(int j=0; j<tmp.length(); j++)
+                        {
+                            if(tmp[j]!=ui->CDplot->graph(i)->name()[j])
+                                break;
+                            else if(j==tmp.length()-1)
+                            {
+                                i=-1;
+                                grNo++;
+                            }
+                        }
+                }
+                grName += QString::number(grNo);
+            }
+        }
+        else if(mode==1)
+        {
+            grName = ui->CDplot->graph(graphNo)->name();
+            int grNo=1;
+            for(int i=0; i<ui->CDplot->graphCount();i++)
+            {
+                QString tmp = grName;
+                tmp += "(fit:";
+                tmp += QString::number(grNo);
+                tmp += ")";
+                if(tmp==ui->CDplot->graph(i)->name())
+                {
+                    i=-1;
+                    grNo++;
+                }
+            }
+            grName+="(fit:";
+            grName+= QString::number(grNo);
+            grName+=")";
+        }
+        else
+        {
+            grName = ui->CDplot->graph(graphNo)->name();
+            int grNo=1;
+            for(int i=0; i<ui->CDplot->graphCount();i++)
+            {
+                QString tmp = grName;
+                tmp += "(res:";
+                tmp += QString::number(grNo);
+                tmp += ")";
+                if(tmp==ui->CDplot->graph(i)->name())
+                {
+                    i=-1;
+                    grNo++;
+                }
+            }
+            grName+="(res:";
+            grName+= QString::number(grNo);
+            grName+=")";
+        }
+        ui->CDplot->graph()->setName(grName);
+        ui->graphBox->addItem(grName);
+        ui->graphBox_2->addItem(grName);
+        ui->graphBox_3->addItem(grName);
+        ui->graphBox_4->addItem(grName);
+        ui->graphBoxDiff->addItem(grName);
 
-      extern bool drawLine;
-      if(drawLine==true)
-          ui->CDplot->graph()->setLineStyle(QCPGraph::lsLine);
-      else if(mode==2)
-          ui->CDplot->graph()->setLineStyle(QCPGraph::lsImpulse);
-      else
-          ui->CDplot->graph()->setLineStyle(QCPGraph::lsNone);
-      if(dataVec[0].size()>2)
-      {
-        ui->CDplot->graph()->setErrorType(QCPGraph::etValue);
-        ui->CDplot->graph()->setErrorPen(faucetPen);
-      }
-      //set scatter style:
-      if(drawLine==true || mode==2)
-          ui->CDplot->graph()->setScatterStyle(QCPScatterStyle::ssNone);
-      else
-          ui->CDplot->graph()->setScatterStyle(QCPScatterStyle(shapes.at(faucetShape),10));
-      drawLine=false;
+        extern bool drawLine;
+        if(drawLine==true)
+            ui->CDplot->graph()->setLineStyle(QCPGraph::lsLine);
+        else if(mode==2)
+            ui->CDplot->graph()->setLineStyle(QCPGraph::lsImpulse);
+        else
+            ui->CDplot->graph()->setLineStyle(QCPGraph::lsNone);
+        if(dataVec[0].size()>2)
+        {
+            ui->CDplot->graph()->setErrorType(QCPGraph::etValue);
+            ui->CDplot->graph()->setErrorPen(faucetPen);
+        }
+        //set scatter style:
+        if(drawLine==true || mode==2)
+            ui->CDplot->graph()->setScatterStyle(QCPScatterStyle::ssNone);
+        else
+            ui->CDplot->graph()->setScatterStyle(QCPScatterStyle(shapes.at(faucetShape),10));
+        drawLine=false;
     }
     // set blank axis lines:
     ui->CDplot->rescaleAxes();
@@ -4323,21 +4697,25 @@ void CDpal::fitData()
         ui->graphBox_2->setCurrentIndex(ui->graphBox->currentIndex());
         ui->graphBox_3->setCurrentIndex(ui->graphBox->currentIndex());
         ui->graphBox_4->setCurrentIndex(ui->graphBox->currentIndex());
+        ui->graphBoxDiff->setCurrentIndex(ui->graphBox->currentIndex());
         break;
     case 2: str = ui->graphBox_2->currentText();
         ui->graphBox->setCurrentIndex(ui->graphBox_2->currentIndex());
         ui->graphBox_3->setCurrentIndex(ui->graphBox_2->currentIndex());
         ui->graphBox_4->setCurrentIndex(ui->graphBox_2->currentIndex());
+        ui->graphBoxDiff->setCurrentIndex(ui->graphBox_2->currentIndex());
         break;
     case 3: str = ui->graphBox_3->currentText();
         ui->graphBox->setCurrentIndex(ui->graphBox_3->currentIndex());
         ui->graphBox_2->setCurrentIndex(ui->graphBox_3->currentIndex());
         ui->graphBox_4->setCurrentIndex(ui->graphBox_3->currentIndex());
+        ui->graphBoxDiff->setCurrentIndex(ui->graphBox_3->currentIndex());
         break;
     case 4: str = ui->graphBox_4->currentText();
         ui->graphBox->setCurrentIndex(ui->graphBox_4->currentIndex());
         ui->graphBox_3->setCurrentIndex(ui->graphBox_4->currentIndex());
         ui->graphBox_2->setCurrentIndex(ui->graphBox_4->currentIndex());
+        ui->graphBoxDiff->setCurrentIndex(ui->graphBox_4->currentIndex());
         break;
     }
     if(str.length()>4)
@@ -4347,8 +4725,8 @@ void CDpal::fitData()
             {
                 QMessageBox::StandardButton dialog;
                 dialog = QMessageBox::warning(this, "CDpal",
-                             "Cannot fit curve fitted data.\nPlease select an experimental dataset.",
-                             QMessageBox::Ok);
+                                              "Cannot fit curve fitted data.\nPlease select an experimental dataset.",
+                                              QMessageBox::Ok);
                 if(dialog==QMessageBox::Ok)
                 {
                     connect(ui->fitButton,SIGNAL(clicked()),this,SLOT(fitData()));
@@ -4380,8 +4758,8 @@ void CDpal::fitData()
     int len =0;
     while (j != dataMap->constEnd())
     {
-         j++;
-         len++;
+        j++;
+        len++;
     }
     x.resize(len);
     y.resize(len);
@@ -4656,8 +5034,8 @@ void CDpal::fitData()
             {
                 QMessageBox::StandardButton dialog3;
                 dialog3 = QMessageBox::warning(this, "CDpal",
-                             matrixError,
-                             QMessageBox::Ok);
+                                               matrixError,
+                                               QMessageBox::Ok);
                 if(QMessageBox::Ok==dialog3)
                     matrixError="";
                 connect(ui->fitButton,SIGNAL(clicked()),this,SLOT(fitData()));
@@ -4670,7 +5048,7 @@ void CDpal::fitData()
             myerr.simerror(); //jackknife
 
             Output myoutput(x, y, errVal, fitData.parVec, fitfunc_two_state_chem, myerr.jackerr,
-                          fitData.variance, fitData.chi, dof, cfile, cfile);
+                            fitData.variance, fitData.chi, dof, cfile, cfile);
             myoutput.print(true);
             myoutput.plot(false, true); //smooth plotting (many data points)
             plotfit(index);
@@ -4686,8 +5064,8 @@ void CDpal::fitData()
             {
                 QMessageBox::StandardButton dialog3;
                 dialog3 = QMessageBox::warning(this, "CDpal",
-                             matrixError,
-                             QMessageBox::Ok);
+                                               matrixError,
+                                               QMessageBox::Ok);
                 if(QMessageBox::Ok==dialog3)
                     matrixError="";
                 connect(ui->fitButton,SIGNAL(clicked()),this,SLOT(fitData()));
@@ -4700,7 +5078,7 @@ void CDpal::fitData()
             myerr.simerror(); //jackknife
 
             Output myoutput(x, y, errVal, fitData.parVec, fitfunc_three_state_chem, myerr.jackerr,
-                          fitData.variance, fitData.chi, dof, cfile, cfile);
+                            fitData.variance, fitData.chi, dof, cfile, cfile);
             myoutput.print(true);
             myoutput.plot(false, true); //smooth plotting (many data points)
             plotfit(index);
@@ -4716,8 +5094,8 @@ void CDpal::fitData()
             {
                 QMessageBox::StandardButton dialog3;
                 dialog3 = QMessageBox::warning(this, "CDpal",
-                             matrixError,
-                             QMessageBox::Ok);
+                                               matrixError,
+                                               QMessageBox::Ok);
                 if(QMessageBox::Ok==dialog3)
                     matrixError="";
                 connect(ui->fitButton,SIGNAL(clicked()),this,SLOT(fitData()));
@@ -4730,7 +5108,7 @@ void CDpal::fitData()
             myerr.simerror(); //jackknife
 
             Output myoutput(x, y, errVal, fitData.parVec, fitfunc_three_state_dimer1_chem, myerr.jackerr,
-                          fitData.variance, fitData.chi, dof, cfile, cfile);
+                            fitData.variance, fitData.chi, dof, cfile, cfile);
             myoutput.print(true);
             myoutput.plot(false, true); //smooth plotting (many data points)
             plotfit(index);
@@ -4746,8 +5124,8 @@ void CDpal::fitData()
             {
                 QMessageBox::StandardButton dialog3;
                 dialog3 = QMessageBox::warning(this, "CDpal",
-                             matrixError,
-                             QMessageBox::Ok);
+                                               matrixError,
+                                               QMessageBox::Ok);
                 if(QMessageBox::Ok==dialog3)
                     matrixError="";
                 connect(ui->fitButton,SIGNAL(clicked()),this,SLOT(fitData()));
@@ -4760,7 +5138,7 @@ void CDpal::fitData()
             myerr.simerror(); //jackknife
 
             Output myoutput(x, y, errVal, fitData.parVec, fitfunc_three_state_dimer2_chem, myerr.jackerr,
-                          fitData.variance, fitData.chi, dof, cfile, cfile);
+                            fitData.variance, fitData.chi, dof, cfile, cfile);
             myoutput.print(true);
             myoutput.plot(false, true); //smooth plotting (many data points)
             plotfit(index);
@@ -4782,8 +5160,8 @@ void CDpal::fitData()
             {
                 QMessageBox::StandardButton dialog3;
                 dialog3 = QMessageBox::warning(this, "CDpal",
-                             matrixError,
-                             QMessageBox::Ok);
+                                               matrixError,
+                                               QMessageBox::Ok);
                 if(QMessageBox::Ok==dialog3)
                     matrixError="";
                 connect(ui->fitButton,SIGNAL(clicked()),this,SLOT(fitData()));
@@ -4796,7 +5174,7 @@ void CDpal::fitData()
             myerr.simerror(); //jackknife
 
             Output myoutput(x, y, errVal, fitData.parVec, function, myerr.jackerr,
-                          fitData.variance, fitData.chi, dof, cfile, cfile);
+                            fitData.variance, fitData.chi, dof, cfile, cfile);
             myoutput.print(true);
             myoutput.plot(false, true); //smooth plotting (many data points)
             plotfit(index);
@@ -4812,8 +5190,8 @@ void CDpal::fitData()
             {
                 QMessageBox::StandardButton dialog3;
                 dialog3 = QMessageBox::warning(this, "CDpal",
-                             matrixError,
-                             QMessageBox::Ok);
+                                               matrixError,
+                                               QMessageBox::Ok);
                 if(QMessageBox::Ok==dialog3)
                     matrixError="";
                 connect(ui->fitButton,SIGNAL(clicked()),this,SLOT(fitData()));
@@ -4826,7 +5204,7 @@ void CDpal::fitData()
             myerr.simerror(); //jackknife
 
             Output myoutput(x, y, errVal, fitData.parVec, fitfunc_three_state, myerr.jackerr,
-                          fitData.variance, fitData.chi, dof, cfile, cfile);
+                            fitData.variance, fitData.chi, dof, cfile, cfile);
             myoutput.print(true);
             myoutput.plot(false, true); //smooth plotting (many data points)
             plotfit(index);
@@ -4842,8 +5220,8 @@ void CDpal::fitData()
             {
                 QMessageBox::StandardButton dialog3;
                 dialog3 = QMessageBox::warning(this, "CDpal",
-                             matrixError,
-                             QMessageBox::Ok);
+                                               matrixError,
+                                               QMessageBox::Ok);
                 if(QMessageBox::Ok==dialog3)
                     matrixError="";
                 connect(ui->fitButton,SIGNAL(clicked()),this,SLOT(fitData()));
@@ -4856,7 +5234,7 @@ void CDpal::fitData()
             myerr.simerror(); //jackknife
 
             Output myoutput(x, y, errVal, fitData.parVec, fitfunc_three_state_dimer1, myerr.jackerr,
-                          fitData.variance, fitData.chi, dof, cfile, cfile);
+                            fitData.variance, fitData.chi, dof, cfile, cfile);
             myoutput.print(true);
             myoutput.plot(false, true); //smooth plotting (many data points)
             plotfit(index);
@@ -4872,8 +5250,8 @@ void CDpal::fitData()
             {
                 QMessageBox::StandardButton dialog3;
                 dialog3 = QMessageBox::warning(this, "CDpal",
-                             matrixError,
-                             QMessageBox::Ok);
+                                               matrixError,
+                                               QMessageBox::Ok);
                 if(QMessageBox::Ok==dialog3)
                     matrixError="";
                 connect(ui->fitButton,SIGNAL(clicked()),this,SLOT(fitData()));
@@ -4886,7 +5264,7 @@ void CDpal::fitData()
             myerr.simerror(); //jackknife
 
             Output myoutput(x, y, errVal, fitData.parVec, fitfunc_three_state_dimer2, myerr.jackerr,
-                          fitData.variance, fitData.chi, dof, cfile, cfile);
+                            fitData.variance, fitData.chi, dof, cfile, cfile);
             myoutput.print(true);
             myoutput.plot(false, true); //smooth plotting (many data points)
             plotfit(index);
@@ -5386,6 +5764,8 @@ void CDpal::loadLabels(int model)
         ui->fKi->setVisible(true);
         ui->errKi->setVisible(true);
         break;
+    case 5:
+        break;
     default:
         ui->lP->setVisible(true);
         ui->fP->setVisible(true);
@@ -5414,6 +5794,22 @@ void CDpal::fillLabels(int no, int model)
     //Put fitted parameters in the result tab
     extern std::vector< std::vector< std::string> > rV2;
     extern std::vector< std::vector< std::string> > resultStrVec;
+    if(model == 5)
+    {
+        ui->e1->setText(mconvert(resultStrVec[no][1]));
+        ui->e2->setText(mconvert(rV2[no][0]));
+        ui->e3->setText(mconvert(rV2[no][1]));
+        ui->e4->setText(mconvert(rV2[no][2]));
+
+        ui->fH1->setText(mconvert(rV2[no][3]));
+        ui->errH1->setText(mconvert(rV2[no][4]));
+        ui->fTm1->setText(mconvert(rV2[no][5]));
+        ui->errTm1->setText(mconvert(rV2[no][6]));
+        ui->fscale->setText(mconvert(rV2[no][7]));
+        ui->errscale->setText(mconvert(rV2[no][8]));
+        return;
+    }
+
     if(chemical)
     {
         ui->lP->setVisible(false);
@@ -5683,6 +6079,31 @@ void CDpal::plotfit(int graphNo)
 
 void CDpal::loadData()
 {
+    if(diffMode)
+    {
+        QMessageBox::StandardButton dialog;
+        dialog = QMessageBox::warning(this, "Warning",
+                                      "Importing a new data set will delete all current data sets.\n"
+                                      "This step cannot be undone.",
+                                      QMessageBox::Ok | QMessageBox::Cancel);
+        if( dialog == QMessageBox::Cancel)
+            return;
+        diffMode = false;
+        changeDiffMode(false);
+        ui->CDplot->clearGraphs();
+        ui->CDplot->replot();
+        updateTable(0);
+        clearResults();
+        extern std::vector< std::vector< std::string> > rV2;
+        extern std::vector< std::vector< std::string> > resultStrVec;
+        resultStrVec.clear();
+        rV2.clear();
+        ui->graphBox->clear();
+        ui->graphBox_2->clear();
+        ui->graphBox_3->clear();
+        ui->graphBox_4->clear();
+        ui->graphBoxDiff->clear();
+    }
     QFileDialog dialog(this);
     extern QString dirString;
     if(dirString=="")
@@ -5736,14 +6157,14 @@ void CDpal::exportResults()
     dialog_exp.setWindowModality(Qt::ApplicationModal);
     if(dialog_exp.exec())
     {
-    //Saves results
+        //Saves results
         QString path;
         QFileDialog dialog(this);
         dialog.setFileMode(QFileDialog::Directory);
         path = QFileDialog::getExistingDirectory(
-        this,
-        "Choose a directory",
-        QString::null, QFileDialog::ShowDirsOnly);
+                    this,
+                    "Choose a directory",
+                    QString::null, QFileDialog::ShowDirsOnly);
         if(path.isNull() == false)
         {
             path+="/";
@@ -5753,8 +6174,8 @@ void CDpal::exportResults()
             return;
         QMessageBox::StandardButton dialog2;
         dialog2 = QMessageBox::warning(this, "CDpal",
-                     "CDpal will overwrite any file with the same name as the outputfile, i.e. Graph 0 has the output name \"Graph 0.txt\"\nIt is recommended to save your files in an empty folder.\nAre you sure you want to export data to the selected folder?",
-                     QMessageBox::Yes | QMessageBox::No);
+                                       "CDpal will overwrite any file with the same name as the outputfile, i.e. Graph 0 has the output name \"Graph 0.txt\"\nIt is recommended to save your files in an empty folder.\nAre you sure you want to export data to the selected folder?",
+                                       QMessageBox::Yes | QMessageBox::No);
         if(dialog2==QMessageBox::No)
             return;
         extern QStringList exportList;
@@ -5798,6 +6219,8 @@ void CDpal::exportResults()
                                     break;
                                 case 4: file2<<"Model: N2-I2-2D\n";
                                     break;
+                                case 5: file2<<"Model: First derivative\n";
+                                    break;
                                 }
                                 file2<<"Number of points: "<<rV2[k][0]<<"\n";
                                 file2<<"Degrees of freedom: "<<rV2[k][1]<<"\n";
@@ -5815,6 +6238,13 @@ void CDpal::exportResults()
                                     file2<<"Delta H1 error: "<<rV2[k][4]<<"\n";
                                     file2<<"Tm1: "<<rV2[k][5]<<"\n";
                                     file2<<"Tm1 error: "<<rV2[k][6]<<"\n";
+                                }
+                                if(model == 5)
+                                {
+                                    file2<<"a (Scaling factor): "<<rV2[k][7]<<"\n";
+                                    file2<<"a (Scaling factor) error: "<<rV2[k][8]<<"\n";
+                                    file2.close();
+                                    continue;
                                 }
                                 file2<<"Native intercept: "<<rV2[k][7]<<"\n";
                                 file2<<"Native intercept error: "<<rV2[k][8]<<"\n";
@@ -5859,11 +6289,11 @@ void CDpal::exportResults()
                                         file2<<"Intermediate intercept error: "<<rV2[k][22]<<"\n";
                                         file2<<"Intermediate slope: "<<rV2[k][23]<<"\n";
                                         file2<<"Intermediate slope error: "<<rV2[k][24]<<"\n";
-                                       if(model>2)
-                                       {
-                                           file2<<"Protein concentration, µM: "<<rV2[k][25]<<"\n";
-                                           file2<<"Protein concentration error, µM: "<<rV2[k][26]<<"\n";
-                                       }
+                                        if(model>2)
+                                        {
+                                            file2<<"Protein concentration, µM: "<<rV2[k][25]<<"\n";
+                                            file2<<"Protein concentration error, µM: "<<rV2[k][26]<<"\n";
+                                        }
                                     }
                                     else
                                     {
@@ -5966,8 +6396,8 @@ void CDpal::saveResults()
     {
         QMessageBox::StandardButton dialog;
         dialog = QMessageBox::warning(this, "CDpal",
-                     "Are you sure you want to print the graph with the default title?",
-                     QMessageBox::Yes | QMessageBox::Cancel);
+                                      "Are you sure you want to print the graph with the default title?",
+                                      QMessageBox::Yes | QMessageBox::Cancel);
         if( dialog == QMessageBox::Yes)
         {
             QString selFilter("");
@@ -6149,6 +6579,8 @@ void CDpal::saveProject()
         }
         file<<"FitEnd\n";
     }
+    if(diffMode)
+        file<<"DIFFMODE\n";
     file.close();
 }
 
@@ -6174,6 +6606,9 @@ void CDpal::openProject()
                                            QMessageBox::Ok | QMessageBox::Cancel);
             if(dialog2==QMessageBox::Cancel)
                 return;
+            ui->fitDiff->setEnabled(false);
+            ui->autofitAllDiff->setEnabled(false);
+            ui->autoFitDiff->setEnabled(false);
         }
         dirString = dialog.selectedFiles().at(0);
         for(unsigned int i = dirString.size()-1; i>0; i--)
@@ -6192,7 +6627,9 @@ void CDpal::openProject()
         extern std::vector< std::vector< std::string> > resultStrVec;
         resultStrVec.clear();
         rV2.clear();
-//Disables functions when no data is present
+        diffMode = false;
+        changeDiffMode(true);
+        //Disables functions when no data is present
         disconnect(ui->fitButton,SIGNAL(clicked()),this,SLOT(fitData()));
         disconnect(ui->fitButton_2,SIGNAL(clicked()),this,SLOT(fitData()));
         disconnect(ui->fitButton_3,SIGNAL(clicked()),this,SLOT(fitData()));
@@ -6230,6 +6667,7 @@ void CDpal::openProject()
         ui->graphBox_2->clear();
         ui->graphBox_3->clear();
         ui->graphBox_4->clear();
+        ui->graphBoxDiff->clear();
         disconnect(ui->actionF_test, SIGNAL(triggered()), this, SLOT(fTest()));
         //
 
@@ -6246,6 +6684,9 @@ void CDpal::openProject()
                 std::string str = line;
                 std::istringstream iss(line);
                 std::string sub("");
+                if(line == "DIFFMODE")
+                    diffMode = true;
+
                 if(counter<7)
                 {
                     switch(counter)
@@ -6350,6 +6791,7 @@ void CDpal::openProject()
                                         ui->graphBox_2->setItemText(u,graphName);
                                         ui->graphBox_3->setItemText(u,graphName);
                                         ui->graphBox_4->setItemText(u,graphName);
+                                        ui->graphBoxDiff->setItemText(u,graphName);
                                     }
                                 }
                                 Pen.setWidth(graphPenWidth);
@@ -6510,6 +6952,7 @@ void CDpal::openProject()
                                         ui->graphBox_2->setItemText(u,fitName);
                                         ui->graphBox_3->setItemText(u,fitName);
                                         ui->graphBox_4->setItemText(u,fitName);
+                                        ui->graphBoxDiff->setItemText(u,fitName);
                                     }
                                 }
 
@@ -6623,7 +7066,7 @@ void CDpal::openProject()
             extern std::vector< std::vector< std::string> > resultStrVec;
             resultStrVec.clear();
             rV2.clear();
-//Disables functions when no data is present
+            //Disables functions when no data is present
             disconnect(ui->fitButton,SIGNAL(clicked()),this,SLOT(fitData()));
             disconnect(ui->fitButton_2,SIGNAL(clicked()),this,SLOT(fitData()));
             disconnect(ui->fitButton_3,SIGNAL(clicked()),this,SLOT(fitData()));
@@ -6661,6 +7104,7 @@ void CDpal::openProject()
             ui->graphBox_2->clear();
             ui->graphBox_3->clear();
             ui->graphBox_4->clear();
+            ui->graphBoxDiff->clear();
             disconnect(ui->actionF_test, SIGNAL(triggered()), this, SLOT(fTest()));
             QMessageBox::StandardButton dialog2;
             if(!modeError)
@@ -6691,8 +7135,8 @@ void CDpal::openProject()
                                                    QMessageBox::Ok);
                     if(dialog2==QMessageBox::Ok)
                     {
-                         ui->CDplot->xAxis->setLabel("Concentration (M)");
-                         ui->CDplot->replot();
+                        ui->CDplot->xAxis->setLabel("Concentration (M)");
+                        ui->CDplot->replot();
                     }
                 }
             }
@@ -6701,6 +7145,12 @@ void CDpal::openProject()
         ui->CDplot->xAxis->setLabelFont(QFont("sans", 12, QFont::Bold));
         ui->CDplot->yAxis->setLabelFont(QFont("sans", 12, QFont::Bold));
         ui->CDplot->replot();
+    }
+    if(ui->CDplot->graphCount())
+    {
+        ui->fitDiff->setEnabled(true);
+        ui->autofitAllDiff->setEnabled(true);
+        ui->autoFitDiff->setEnabled(true);
     }
     disconnect(ui->fitButton,SIGNAL(clicked()),this,SLOT(fitData()));
     disconnect(ui->fitButton_2,SIGNAL(clicked()),this,SLOT(fitData()));
@@ -6743,6 +7193,8 @@ void CDpal::openProject()
     connect(ui->actionAutofit_All, SIGNAL(triggered()), this, SLOT(AutofitAll()));
     disconnect(ui->actionF_test, SIGNAL(triggered()), this, SLOT(fTest()));
     connect(ui->actionF_test, SIGNAL(triggered()), this, SLOT(fTest()));
+    if(diffMode)
+        changeDiffMode(true);
 }
 
 QString CDpal::calcSG(int model, int mode, double x, double y, double x2, double y2)
@@ -6987,8 +7439,8 @@ void CDpal::loadStyle()
                         default : orn=QCPScatterStyle::ssDisc;
                             break;
                         }
-                            graphStyle.ornament=orn;
-                            gVec.push_back(graphStyle);
+                        graphStyle.ornament=orn;
+                        gVec.push_back(graphStyle);
                     }
                     break;
                 }
@@ -7068,5 +7520,591 @@ void CDpal::saveStyle()
     if(sDialog.exec())
     {
         //Ok button was pressed
+    }
+}
+
+//Code for fitting first derivatives
+void CDpal::on_clearButtonDiff_clicked()
+{
+    ui->aEditDiff->clear();
+    ui->tmEditDiff->clear();
+    ui->deltaEditDiff->clear();
+    ui->aBoxDiff->setChecked(0);
+    ui->tmBoxDiff->setChecked(0);
+    ui->deltaBoxDiff->setChecked(0);
+}
+
+void CDpal::on_fitDiff_clicked()
+{
+    //Fit derivative
+    bool ok(false);
+    double tm(ui->tmEditDiff->text().toDouble(&ok));
+    if(!ok)
+    {
+        QMessageBox::warning(this, "Error","Tm is not a numerical value. Aborting.",QMessageBox::Ok);
+        return;
+    }
+    double dH(ui->deltaEditDiff->text().toDouble(&ok));
+    if(!ok)
+    {
+        QMessageBox::warning(this, "Error","dH is not a numerical value. Aborting.",QMessageBox::Ok);
+        return;
+    }
+    double a(ui->aEditDiff->text().toDouble(&ok));
+    if(!ok)
+    {
+        QMessageBox::warning(this, "Error","The scaling factor \'a\' is not a numerical value. Aborting.",QMessageBox::Ok);
+        return;
+    }
+    if(ui->graphBoxDiff->currentText().contains("(fit:"))
+    {
+        QMessageBox::StandardButton dialog;
+        dialog = QMessageBox::warning(this, "Error",
+                                      "Cannot fit already fitted data. Aborting.",
+                                      QMessageBox::Ok);
+    }
+    else
+    {
+        for(int i(0); i<ui->CDplot->graphCount(); ++i)
+        {
+            if(ui->CDplot->graph(i)->name() == ui->graphBoxDiff->currentText())
+            {
+                autoFitDiff(ui->graphBoxDiff->currentIndex(), true, dH, tm, a);
+                return;
+            }
+        }
+    }
+}
+
+void CDpal::on_autoFitDiff_clicked()
+{
+    //Autofit diff
+    if(ui->graphBoxDiff->currentText().contains("(fit:"))
+    {
+        QMessageBox::StandardButton dialog;
+        dialog = QMessageBox::warning(this, "Error",
+                                      "Cannot fit already fitted data. Aborting.",
+                                      QMessageBox::Ok);
+    }
+    else
+    {
+        for(int i(0); i<ui->CDplot->graphCount(); ++i)
+        {
+            if(ui->CDplot->graph(i)->name() == ui->graphBoxDiff->currentText())
+            {
+                autoFitDiff(ui->graphBoxDiff->currentIndex(), false, 0.0, 0.0, 0.0);
+                return;
+            }
+        }
+    }
+}
+
+void CDpal::on_autofitAllDiff_clicked()
+{
+    //Autofit all diff
+    int max(ui->CDplot->graphCount());
+    for(int i(0); i< max; ++i)
+    {
+        if(!ui->CDplot->graph(i)->name().contains("(fit:"))
+            autoFitDiff(i, false, 0.0, 0.0, 0.0);
+    }
+}
+
+void CDpal::autoFitDiff(int idx, bool manual, double mdH, double mtm, double ma)
+{
+    std::vector< double > a, x, y, errVal, params;
+    std::vector< bool > fixed;
+    x.resize(ui->CDplot->graph(idx)->data()->values().count());
+    y.resize(ui->CDplot->graph(idx)->data()->values().count());
+    errVal.resize(ui->CDplot->graph(idx)->data()->values().count());
+    params.resize(3);
+    fixed.resize(3);
+    a.resize(3);
+    //Find Tm estimate == highest value
+    double tmComp(-9e99);
+    double tm(0);
+    for(int j(0); j<ui->CDplot->graph(idx)->data()->values().count(); ++j)
+    {
+        if(tmComp < ui->CDplot->graph(idx)->data()->values().at(j).value)
+        {
+            tmComp = ui->CDplot->graph(idx)->data()->values().at(j).value;
+            tm = ui->CDplot->graph(idx)->data()->values().at(j).key;
+        }
+        x[j] = ui->CDplot->graph(idx)->data()->values().at(j).key;
+        y[j] = ui->CDplot->graph(idx)->data()->values().at(j).value;
+        errVal[j] = 1.0;
+    }
+    ui->deltaEditDiff->setText("350");
+    ui->tmEditDiff->setText(QString::number(tm));
+    double dH(350000);
+    double aVal(1.0e-5);
+    if(manual)
+    {
+        dH = mdH*1000.0;
+        tm = mtm;
+        aVal = ma;
+    }
+    params[0] = a[0] = dH;
+    params[1] = a[1] = tm;
+    params[2] = a[2] = aVal;
+    if(manual)
+    {
+        fixed[0] = !ui->deltaBoxDiff->isChecked();
+        fixed[1] = !ui->tmBoxDiff->isChecked();
+        fixed[2] = !ui->aBoxDiff->isChecked();
+    }
+    else
+    {
+        ui->tmEditDiff->setText(QString::number(tm));
+        ui->deltaEditDiff->setText("350");
+        ui->aEditDiff->setText(QString::number(aVal));
+        ui->deltaBoxDiff->setChecked(false);
+        ui->tmBoxDiff->setChecked(false);
+        ui->aBoxDiff->setChecked(false);
+        fixed[0] = true;
+        fixed[1] = true;
+        fixed[2] = true;
+    }
+    int dof(x.size());
+
+    for(unsigned int p=0; p<fixed.size(); p++)
+    {
+        if(fixed[p])
+            --dof;
+        if(params[p]>0)
+            continue;
+        if(fixed[p])
+            params[p]=0.00000001;
+    }
+
+    void fitfunc(const double x, std::vector< double > &a, double &y, std::vector< double > &dyda);
+    CDdiffFitmrq fitData(x, y, errVal, params, fixed, fitfunc);
+    //Gridsearch
+    if(!manual)
+    {
+        std::vector< double > aLow;
+        std::vector< double > aHigh;
+        aLow.push_back(350000); //dH
+        aHigh.push_back(350000);
+        aLow.push_back(tm);//tm
+        aHigh.push_back(tm);
+        aLow.push_back(1e-20);//aVal
+        aHigh.push_back(0.1);
+        std::vector< int > steps;
+        steps.push_back(1);
+        steps.push_back(1);
+        steps.push_back(100);
+        fitData.gridSearch(aLow, aHigh, steps, true);
+    }
+    //
+    fitData.fit();
+    if(fitData.a.at(0)<0)
+        fitData.a[0]*=-1.0;
+    extern QString matrixError;
+    if(matrixError!="")
+    {
+        QMessageBox::StandardButton dialog3;
+        dialog3 = QMessageBox::warning(this, "CDpal",
+                                       matrixError,
+                                       QMessageBox::Ok);
+        if(QMessageBox::Ok==dialog3)
+            matrixError="";
+        return;
+    }
+    CDdiffErrorSim myerr(x, y, errVal, fitData.a, fixed, fitfunc);
+    myerr.simerror(0,1,0); //jackknife
+    char *cfile=NULL;
+
+    Output myoutput(x, y, errVal, fitData.a, fitfunc, myerr.jackerr,
+                    fitData.covar, fitData.chisq, dof, cfile, cfile);
+    myoutput.print(true);
+    myoutput.plot(false, true); //smooth plotting (many data points)
+    plotfit(idx);
+
+    extern std::vector< std::vector< std::string> > resultStrVec;
+    int fitNo=1;
+    for(unsigned int u=0; u<resultStrVec.size(); u++)
+    {
+        QString str = ui->graphBoxDiff->itemText(idx)+"(fit:"+QString::number(fitNo)+")";
+        if(resultStrVec[u][1] == mconvert(str))
+        {
+            fitNo++;
+            u=-1;
+        }
+    }
+    QString nN = ui->graphBoxDiff->itemText(idx) + "(fit:" + QString::number(fitNo) + ")";
+    std::vector<std::string> tmpStrVec;
+    extern std::string resultStr;
+    tmpStrVec.push_back(resultStr);
+    tmpStrVec.push_back(mconvert(nN));
+    //Store fitting parameters for display upon selection
+    QString parameters;
+    if(ui->deltaEditDiff->text()!="")
+        parameters="5 "+ui->deltaEditDiff->text()+" ";
+    else
+        parameters="5 0 ";
+    if(ui->deltaBoxDiff->isChecked())
+        parameters+="true ";
+    else
+        parameters+="false ";
+    if(ui->tmEditDiff->text()!="")
+        parameters+=ui->tmEditDiff->text()+" ";
+    else
+        parameters+="0 ";
+    if(ui->tmBoxDiff->isChecked())
+        parameters+="true ";
+    else
+        parameters+="false ";
+    if(ui->aEditDiff->text()!="")
+        parameters+=ui->aEditDiff->text()+" ";
+    else
+        parameters+="0 ";
+    if(ui->aBoxDiff->isChecked())
+        parameters+="true ";
+    else
+        parameters+="false ";
+    tmpStrVec.push_back(mconvert(parameters));
+    //
+    resultStrVec.push_back(tmpStrVec);
+    extern std::vector< std::string> rV;
+    extern std::vector< std::vector< std::string> > rV2;
+    for(int o=0; o<3; o++)
+        if(!fixed[o])
+            rV[4+o*2]="Fixed";
+    rV2.push_back(rV);
+    //Enable correct lineEdits and labels for corresponding model
+    loadLabels(5);
+    fillLabels(resultStrVec.size()-1, 5);
+    //Change to result tab after fit
+    ui->tabWidget_2->setCurrentIndex(1);
+}
+
+void CDpal::on_actionSimulate_data_triggered()
+{
+    //Simulate data
+    if(diffMode)
+    {
+        QMessageBox::StandardButton dialog;
+        dialog = QMessageBox::warning(this, "Warning",
+                                      "Importing a new data set will delete all current data sets.\n"
+                                      "This step cannot be undone.",
+                                      QMessageBox::Ok | QMessageBox::Cancel);
+        if( dialog == QMessageBox::Cancel)
+            return;
+        diffMode = false;
+        changeDiffMode(false);
+        ui->CDplot->clearGraphs();
+        ui->CDplot->replot();
+        updateTable(0);
+        clearResults();
+        extern std::vector< std::vector< std::string> > rV2;
+        extern std::vector< std::vector< std::string> > resultStrVec;
+        resultStrVec.clear();
+        rV2.clear();
+        ui->graphBox->clear();
+        ui->graphBox_2->clear();
+        ui->graphBox_3->clear();
+        ui->graphBox_4->clear();
+        ui->graphBoxDiff->clear();
+    }
+    if(!simDiag)
+    {
+        simDiag = new simulateDialog(this, chemical);
+        disconnect(simDiag, SIGNAL(simulate()), this, SLOT(simulate()));
+        connect(simDiag, SIGNAL(simulate()), this, SLOT(simulate()));
+        disconnect(simDiag, SIGNAL(deleteDataset()), this, SLOT(deleteLastDataset()));
+        connect(simDiag, SIGNAL(deleteDataset()), this, SLOT(deleteLastDataset()));
+        disconnect(simDiag, SIGNAL(hideUI()), simDiag, SLOT(hide()));
+        connect(simDiag, SIGNAL(hideUI()), simDiag, SLOT(hide()));
+        simDiag->setModal(true);
+    }
+    simDiag->show();
+}
+
+void CDpal::simulate()
+{
+    double stepsize((simDiag->maxTemp - simDiag->minTemp)/(simDiag->datapoints-1));
+    std::vector<double> x;
+    x.resize(simDiag->datapoints);
+    for(int i(0); i<x.size();++i)
+        x[i] = simDiag->minTemp + i * stepsize;
+    void (*func)(const double, std::vector< double > &, double &, std::vector< double > &);
+    std::vector< double > parVec;
+
+    switch(simDiag->model)
+    {
+    case 0: //ND
+        if(chemical)
+        {
+            void fitfunc_two_state_chem(const double x, std::vector< double > &a, double &y, std::vector< double > &dyda);
+            func = fitfunc_two_state_chem;
+        }
+        else
+        {
+            void function(const double x, std::vector< double > &a, double &y, std::vector< double > &dyda);
+            func = function;
+        }
+        parVec.push_back(simDiag->dH);
+        parVec.push_back(simDiag->tm);
+        parVec.push_back(simDiag->mn);
+        parVec.push_back(simDiag->md);
+        parVec.push_back(simDiag->kn);
+        parVec.push_back(simDiag->kd);
+        parVec.push_back(simDiag->cp);
+        break;
+    case 1: //NID
+        if(chemical)
+        {
+            void fitfunc_three_state_chem(const double x, std::vector< double > &a, double &y, std::vector< double > &dyda);
+            func = fitfunc_three_state_chem;
+        }
+        else
+        {
+            void fitfunc_three_state(const double x, std::vector< double > &a, double &y, std::vector< double > &dyda);
+            func = fitfunc_three_state;
+        }
+        parVec.push_back(simDiag->dH);
+        parVec.push_back(simDiag->tm);
+        parVec.push_back(simDiag->mn);
+        parVec.push_back(simDiag->md);
+        parVec.push_back(simDiag->kn);
+        parVec.push_back(simDiag->kd);
+        parVec.push_back(simDiag->cp);
+        parVec.push_back(simDiag->dH2);
+        parVec.push_back(simDiag->tm2);
+        parVec.push_back(simDiag->mi);
+        parVec.push_back(simDiag->ki);
+        if(!chemical)
+            parVec.push_back(simDiag->cp2);
+        break;
+    case 2: //N22I2D
+        if(chemical)
+        {
+            void fitfunc_three_state_dimer1_chem(const double x, std::vector< double > &a, double &y, std::vector< double > &dyda);
+            func = fitfunc_three_state_dimer1_chem;
+        }
+        else
+        {
+            void fitfunc_three_state_dimer1(const double x, std::vector< double > &a, double &y, std::vector< double > &dyda);
+            func = fitfunc_three_state_dimer1;
+        }
+        parVec.push_back(simDiag->dH);
+        parVec.push_back(simDiag->tm);
+        parVec.push_back(simDiag->mn);
+        parVec.push_back(simDiag->md);
+        parVec.push_back(simDiag->kn);
+        parVec.push_back(simDiag->kd);
+        parVec.push_back(simDiag->cp);
+        parVec.push_back(simDiag->dH2);
+        parVec.push_back(simDiag->tm2);
+        parVec.push_back(simDiag->mi);
+        parVec.push_back(simDiag->ki);
+        if(!chemical)
+            parVec.push_back(simDiag->cp2);
+        parVec.push_back(simDiag->conc);
+        break;
+    case 3: //NI22D
+        if(chemical)
+        {
+            void fitfunc_three_state_dimer2_chem(const double x, std::vector< double > &a, double &y, std::vector< double > &dyda);
+            func = fitfunc_three_state_dimer2_chem;
+        }
+        else
+        {
+            void fitfunc_three_state_dimer2(const double x, std::vector< double > &a, double &y, std::vector< double > &dyda);
+            func = fitfunc_three_state_dimer2;
+        }
+        parVec.push_back(simDiag->dH);
+        parVec.push_back(simDiag->tm);
+        parVec.push_back(simDiag->mn);
+        parVec.push_back(simDiag->md);
+        parVec.push_back(simDiag->kn);
+        parVec.push_back(simDiag->kd);
+        parVec.push_back(simDiag->cp);
+        parVec.push_back(simDiag->dH2);
+        parVec.push_back(simDiag->tm2);
+        parVec.push_back(simDiag->mi);
+        parVec.push_back(simDiag->ki);
+        if(!chemical)
+            parVec.push_back(simDiag->cp2);
+        parVec.push_back(simDiag->conc);
+        break;
+    default://Derivative
+        void fitfunc(const double x, std::vector< double > &a, double &y, std::vector< double > &dyda);
+        func = fitfunc;
+        parVec.push_back(simDiag->dH);
+        parVec.push_back(simDiag->tm);
+        parVec.push_back(simDiag->a);
+        break;
+    }
+    std::vector< double > dydx(parVec.size());
+    std::vector<double> yplot(x.size());
+    const double mean = 0.0;
+    const double stddev = simDiag->noise;
+    std::mt19937 generator(std::random_device{}());
+    auto dist = std::bind(std::normal_distribution<double>{mean, stddev},
+                          std::mt19937(std::random_device{}()));
+
+    double max=-1.0e99;
+    double min=1.0e99;
+    for (unsigned int i=0; i<static_cast<unsigned int>(x.size()); i++)
+    {
+        func(x[i], parVec, yplot[i], dydx);
+        yplot[i] = yplot[i] + dist(generator); // Add noise
+        if(yplot[i]>max)
+            max=yplot[i];
+        if(yplot[i]<min)
+            min=yplot[i];
+    }
+    //Normalize y values
+    std::vector<std::vector<std::string> > dataVec;
+    for (unsigned int i=0; i<yplot.size(); i++)
+    {
+        std::vector<std::string> tmpVec;
+        tmpVec.push_back(mconvert(x.at(i)));
+        tmpVec.push_back(mconvert((yplot[i]-min)/(max-min)));
+        dataVec.push_back(tmpVec);
+    }
+    extern bool customName;
+    customName = true;
+    extern QString currentName;
+    currentName = "Simulated data: ";
+    switch (simDiag->model)
+    {
+    case 0:
+        currentName += "N->D";
+        break;
+    case 1:
+        currentName += "N->I->D";
+        break;
+    case 2:
+        currentName += "N->2I->2D";
+        break;
+    case 3:
+        currentName += "N->I2->2D";
+        break;
+    default:
+        currentName += "Derivative";
+        break;
+    }
+    ui->fitDiff->setEnabled(true);
+    ui->autofitAllDiff->setEnabled(true);
+    ui->autoFitDiff->setEnabled(true);
+    disconnect(ui->fitButton,SIGNAL(clicked()),this,SLOT(fitData()));
+    disconnect(ui->fitButton_2,SIGNAL(clicked()),this,SLOT(fitData()));
+    disconnect(ui->fitButton_3,SIGNAL(clicked()),this,SLOT(fitData()));
+    disconnect(ui->fitButton_4,SIGNAL(clicked()),this,SLOT(fitData()));
+    disconnect(ui->actionFit,SIGNAL(triggered()),this,SLOT(fitData()));
+    connect(ui->actionFit,SIGNAL(triggered()),this,SLOT(fitData()));
+    connect(ui->fitButton,SIGNAL(clicked()),this,SLOT(fitData()));
+    ui->fitButton->setEnabled(true);
+    connect(ui->fitButton_2,SIGNAL(clicked()),this,SLOT(fitData()));
+    ui->fitButton_2->setEnabled(true);
+    connect(ui->fitButton_3,SIGNAL(clicked()),this,SLOT(fitData()));
+    ui->fitButton_3->setEnabled(true);
+    connect(ui->fitButton_4,SIGNAL(clicked()),this,SLOT(fitData()));
+    ui->fitButton_4->setEnabled(true);
+    disconnect(ui->actionSave_style_preset, SIGNAL(triggered()), this, SLOT(saveStyle()));
+    connect(ui->actionSave_style_preset, SIGNAL(triggered()), this, SLOT(saveStyle()));
+    ui->actionSave_style_preset->setEnabled(true);
+    disconnect(ui->actionLoad_style_preset_2, SIGNAL(triggered()), this, SLOT(loadStyle()));
+    connect(ui->actionLoad_style_preset_2, SIGNAL(triggered()), this, SLOT(loadStyle()));
+    ui->actionLoad_style_preset_2->setEnabled(true);
+    disconnect(ui->actionSave_Project, SIGNAL(triggered()), this, SLOT(saveProject()));
+    connect(ui->actionSave_Project, SIGNAL(triggered()), this, SLOT(saveProject()));
+    ui->actionSave_Project->setEnabled(true);
+    disconnect(ui->actionSave, SIGNAL(triggered()), this, SLOT(saveResults()));
+    connect(ui->actionSave, SIGNAL(triggered()), this, SLOT(saveResults()));
+    ui->actionSave->setEnabled(true);
+    disconnect(ui->actionExport_data,SIGNAL(triggered()),this,SLOT(exportResults()));
+    connect(ui->actionExport_data,SIGNAL(triggered()),this,SLOT(exportResults()));
+    ui->actionExport_data->setEnabled(true);
+    disconnect(ui->actionDelete_all_graphs,SIGNAL(triggered()),this,SLOT(removeAllGraphs()));
+    disconnect(ui->actionDelete_fitted_graphs,SIGNAL(triggered()),this,SLOT(removeFittedGraphs()));
+    connect(ui->actionDelete_all_graphs,SIGNAL(triggered()),this,SLOT(removeAllGraphs()));
+    connect(ui->actionDelete_fitted_graphs,SIGNAL(triggered()),this,SLOT(removeFittedGraphs()));
+    ui->actionDelete_all_graphs->setEnabled(true);
+    ui->actionDelete_fitted_graphs->setEnabled(true);
+    disconnect(ui->actionAutofit, SIGNAL(triggered()), this, SLOT(Autofit()));
+    disconnect(ui->actionAutofit_All, SIGNAL(triggered()), this, SLOT(AutofitAll()));
+    connect(ui->actionAutofit, SIGNAL(triggered()), this, SLOT(Autofit()));
+    connect(ui->actionAutofit_All, SIGNAL(triggered()), this, SLOT(AutofitAll()));
+    disconnect(ui->actionF_test, SIGNAL(triggered()), this, SLOT(fTest()));
+    connect(ui->actionF_test, SIGNAL(triggered()), this, SLOT(fTest()));
+    if(simDiag->model == 4)
+    {
+        diffMode = true;
+        changeDiffMode(false);
+    }
+
+    renderGraph(dataVec,0,0);
+}
+
+void CDpal::deleteLastDataset()
+{
+    if(!ui->CDplot->graphCount()) return;
+    ui->graphBox->removeItem(ui->graphBox->count()-1);
+    ui->graphBox_2->removeItem(ui->graphBox_2->count()-1);
+    ui->graphBox_3->removeItem(ui->graphBox_3->count()-1);
+    ui->graphBox_4->removeItem(ui->graphBox_4->count()-1);
+    ui->graphBoxDiff->removeItem(ui->graphBoxDiff->count()-1);
+    ui->CDplot->removeGraph(ui->CDplot->graphCount()-1);
+    extern int highlightGraph;
+    highlightGraph = -1;
+    ui->CDplot->replot();
+    updateTable(0);
+    extern std::vector< std::vector< std::string> > resultStrVec;
+    extern std::vector< std::vector< std::string> > rV2;
+    for(unsigned int i=0; i<resultStrVec.size();i++)
+        for(int j=0; j<ui->CDplot->graphCount(); j++)
+        {
+            if(ui->CDplot->graph(j)->name()==mconvert(resultStrVec[i][1]))
+                break;
+            else if(j==ui->CDplot->graphCount()-1)
+            {
+                resultStrVec[i].erase(resultStrVec[i].begin() + i);
+                rV2[i].erase(rV2[i].begin() + i);
+            }
+        }
+    //Disables functions if no data is present
+    if(ui->CDplot->graphCount()==0)
+    {
+        ui->fitDiff->setEnabled(false);
+        ui->autofitAllDiff->setEnabled(false);
+        ui->autoFitDiff->setEnabled(false);
+        disconnect(ui->fitButton,SIGNAL(clicked()),this,SLOT(fitData()));
+        disconnect(ui->fitButton_2,SIGNAL(clicked()),this,SLOT(fitData()));
+        disconnect(ui->fitButton_3,SIGNAL(clicked()),this,SLOT(fitData()));
+        disconnect(ui->fitButton_4,SIGNAL(clicked()),this,SLOT(fitData()));
+        disconnect(ui->actionFit,SIGNAL(triggered()),this,SLOT(fitData()));
+        disconnect(ui->actionSave, SIGNAL(triggered()), this, SLOT(saveResults()));
+        disconnect(ui->actionExport_data,SIGNAL(triggered()),this,SLOT(exportResults()));
+        disconnect(ui->actionDelete_graph,SIGNAL(triggered()),this,SLOT(removeSelectedGraph()));
+        disconnect(ui->actionDelete_all_graphs,SIGNAL(triggered()),this,SLOT(removeAllGraphs()));
+        disconnect(ui->actionDelete_fitted_graphs,SIGNAL(triggered()),this,SLOT(removeFittedGraphs()));
+        disconnect(ui->actionSave_Project, SIGNAL(triggered()), this, SLOT(saveProject()));
+        disconnect(ui->actionLoad_style_preset_2, SIGNAL(triggered()), this, SLOT(loadStyle()));
+        disconnect(ui->actionSave_style_preset, SIGNAL(triggered()), this, SLOT(saveStyle()));
+        ui->actionSave_Project->setDisabled(true);
+        ui->actionLoad_style_preset_2->setDisabled(true);
+        ui->actionSave_style_preset->setDisabled(true);
+        ui->actionDelete_graph->setDisabled(true);
+        ui->actionDelete_all_graphs->setDisabled(true);
+        ui->actionDelete_fitted_graphs->setDisabled(true);
+        disconnect(ui->actionColor,SIGNAL(triggered()),this,SLOT(colorGraph()));
+        disconnect(ui->actionChange_style,SIGNAL(triggered()),this,SLOT(changeOrnament()));
+        disconnect(ui->actionChange_pen_width,SIGNAL(triggered()),this,SLOT(changeWidth()));
+        disconnect(ui->actionAutofit, SIGNAL(triggered()), this, SLOT(Autofit()));
+        disconnect(ui->actionAutofit_All, SIGNAL(triggered()), this, SLOT(AutofitAll()));
+        ui->fitButton->setDisabled(true);
+        ui->fitButton_2->setDisabled(true);
+        ui->fitButton_3->setDisabled(true);
+        ui->fitButton_4->setDisabled(true);
+        ui->actionSave->setDisabled(true);
+        ui->actionColor->setDisabled(true);
+        ui->actionExport_data->setDisabled(true);
+        ui->actionChange_style->setDisabled(true);
+        ui->actionChange_pen_width->setDisabled(true);
+        disconnect(ui->actionF_test, SIGNAL(triggered()), this, SLOT(fTest()));
     }
 }
